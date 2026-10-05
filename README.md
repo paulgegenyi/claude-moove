@@ -64,6 +64,10 @@ For downloaded scripts, Windows may say *"Windows protected your PC"*. Click **M
 
 > **Pendrive tip:** the packed folder comes with its own buttons. On the new laptop, open it on the stick and double-click `2 - UNPACK (on the laptop you're moving to)`. There's no warning, because the folder was made on your own laptop.
 
+### Mac / Linux
+
+Not yet: Claude Moove is Windows only for now. **Pull requests are welcome!** Have a look at [How it works](engine/README.md) to see what a Mac or Linux version would need to handle.
+
 ## The little window
 
 Clawd sits at the top the whole way. He walks while things are busy, and a tiny flower bed blooms as each step is done.
@@ -169,7 +173,7 @@ Windows says that about most scripts downloaded through a browser. Click <b>More
 <details>
 <summary><b>Mac or Linux?</b></summary>
 <br>
-Not yet. It's Windows only for now, and pull requests are very welcome.
+Not yet. It's Windows only for now, and pull requests are very welcome (see <a href="#mac--linux">Mac / Linux</a>).
 </details>
 
 ## Good to know
