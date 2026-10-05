@@ -3,3 +3,5 @@ claude-data.zip
 manifest.json
 # Personal Claude Code settings for whoever works on this repo.
 .claude/settings.local.json
+# Local working notes and plans.
+docs/work/

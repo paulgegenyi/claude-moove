@@ -10,7 +10,9 @@ param(
   [string]$DesktopDir = [Environment]::GetFolderPath('Desktop'),
   [string]$DocumentsDir = [Environment]::GetFolderPath('MyDocuments'),
   [string]$OutDir = '',   # where pack puts the transfer folder (default: the Desktop)
-  [switch]$Test           # unattended test run: never closes Claude, opens pages, installs or downloads anything
+  [ValidateSet('ask', 'send', 'usb')][string]$Transfer = 'ask',   # pack: how the folder gets to the new laptop
+  [string]$ReceiveCode = '',   # unpack: the croc code, instead of asking for it
+  [switch]$Test           # unattended test run: never closes Claude, opens pages or installs anything
 )
 $ErrorActionPreference = 'Stop'
 $engine    = $PSScriptRoot
@@ -20,7 +22,9 @@ $claudeDir = Join-Path $AppDataDir 'Claude'
 $marker    = Join-Path $claudeDir 'claude-moove-synced.json'
 $utf8      = New-Object System.Text.UTF8Encoding($false)
 $warnings  = New-Object System.Collections.Generic.List[string]
+$homepage  = 'https://github.com/paulgegenyi/claude-moove'
 $script:work = $null
+$script:received = $null
 
 # ---------------------------------------------------------------- screen and Clawd
 try { [Console]::OutputEncoding = $utf8 } catch {}
@@ -226,9 +230,10 @@ function Start-Tool([string]$exe, [string]$argLine) {
   $null = $p.Handle   # keeps the exit code readable after the process ends
   $p
 }
-function Wait-Walking($proc, [scriptblock]$status) {
+function Wait-Walking($proc, [scriptblock]$status, [scriptblock]$giveUp) {
   $frame = 0; $t0 = Get-Date
   while (-not $proc.HasExited) {
+    if ($giveUp -and (& $giveUp)) { $proc.Kill(); break }
     $canDraw = $false; try { $canDraw = $vt -and -not $Test -and ([Console]::CursorTop -lt ([Console]::WindowHeight - 1)) } catch {}
     if ($canDraw) {
       $c = Get-Clawd $frame
@@ -287,10 +292,119 @@ function Close-Claude {   # returns $true only if Claude is still open (test run
   return $false
 }
 
+# ---------------------------------------------------------------- sending over the internet (croc)
+# croc (open source, MIT) sends a folder end to end encrypted, matched by a one-time code. Nothing is opened
+# on either laptop: both only connect out, directly on the same network or through croc's relay otherwise.
+function Get-Croc {   # croc's path; installs or upgrades it first (with permission) when missing or older than v10
+  Update-Path
+  $cmd = Get-Command croc -ErrorAction SilentlyContinue
+  if ($cmd) { try { if ([version]((& $cmd.Source --version) -replace '[^0-9.]', '') -ge [version]'10.0') { return $cmd.Source } } catch {} }
+  if ($Test) { return $null }
+  if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { $warnings.Add("Sending needs croc, and this laptop can't install apps by itself."); return $null }
+  Put '   To send over the internet I use croc: a small, free, open-source tool that sends' plain
+  Put '   folders end-to-end encrypted, matched by a one-time code.' plain
+  if ((Read-Answer "Press Enter to install it from Windows' app catalogue (this accepts its MIT licence), or type S and Enter to skip.") -eq 'S') { return $null }
+  $verb = if ($cmd) { 'upgrade' } else { 'install' }
+  $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  & winget $verb --id schollz.croc --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity | Out-Null
+  $ErrorActionPreference = $old
+  Update-Path
+  $cmd = Get-Command croc -ErrorAction SilentlyContinue
+  if ($cmd) { $cmd.Source } else { $warnings.Add("croc didn't install."); $null }
+}
+function Start-Croc([string]$croc, [string[]]$croArgs, [string]$log) {
+  $p = Start-Process -FilePath $croc -ArgumentList $croArgs -NoNewWindow -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+  $null = $p.Handle
+  $p
+}
+function Read-Log([string]$log) {   # what croc has printed so far (it keeps both files open while it runs)
+  $text = ''
+  foreach ($f in $log, "$log.err") {
+    try { $fs = [IO.File]::Open($f, 'Open', 'Read', 'ReadWrite'); try { $text += (New-Object IO.StreamReader($fs)).ReadToEnd() } finally { $fs.Dispose() } } catch {}
+  }
+  $text
+}
+function Remove-Log([string]$log) { foreach ($f in $log, "$log.err") { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }
+function Get-LastLine([string]$text) { $l = @(($text -split "[`r`n]+") | Where-Object { $_.Trim() }); if ($l.Count) { $l[$l.Count - 1].Trim() } else { '(nothing)' } }
+function Get-Percent([string]$text) { $m = [regex]::Matches($text, '(\d{1,3})%'); if ($m.Count) { $m[$m.Count - 1].Groups[1].Value + '%' } else { '' } }
+function New-LogPath([string]$kind) { Join-Path $env:TEMP ("claude-moove-$kind-" + [guid]::NewGuid().ToString('N') + '.log') }
+
+function Send-Folder([string]$folder) {   # returns $true once the new laptop has everything
+  $croc = Get-Croc
+  if (-not $croc) { return $false }
+  $p = $null; $code = ''; $log = ''
+  # croc's own DNS lookup first (Windows' lookup of the relay can take longer than croc waits), Windows' as the fallback
+  foreach ($extra in @(@('--internal-dns'), @())) {
+    $log = New-LogPath 'send'
+    $p = Start-Croc $croc (@('--ignore-stdin', '--disable-clipboard') + $extra + @('send', (Q $folder))) $log
+    $t0 = Get-Date
+    while (-not $p.HasExited -and -not $code -and ((Get-Date) - $t0).TotalSeconds -lt 60) {
+      Start-Sleep -Milliseconds 300
+      $m = [regex]::Match((Read-Log $log), 'code=([A-Za-z0-9-]+)'); if ($m.Success) { $code = $m.Groups[1].Value }
+    }
+    if ($code) { break }
+    if (-not $p.HasExited) { $p.Kill() }
+    Remove-Log $log
+  }
+  if (-not $code) { $warnings.Add("Couldn't reach croc's relay, so nothing was sent. Carry the folder on a USB stick instead."); return $false }
+  Gap
+  Put '   Your code:   ' plain -n; Put $code pink
+  Gap
+  Put '   On the NEW laptop:' title
+  Put "     1. Get Claude Moove there:  $homepage" plain
+  Put '        then double-click  2 - UNPACK' plain
+  Put '     2. When it asks, type the code above.' plain
+  Put '   Keep this window open until it says done.' dim
+  Put '   The code works once: only type it on your own laptop.' dim
+  if ($Test) { Write-Host "CROC-CODE:$code" }   # lets an unattended test pick the code up
+  Gap
+  Wait-Walking $p { $pc = Get-Percent (Read-Log $log); if ($pc) { "Sending...  $pc" } else { 'Waiting for the new laptop to type the code...' } }
+  $ok = $p.ExitCode -eq 0
+  $why = Get-LastLine (Read-Log $log)
+  Remove-Log $log
+  if (-not $ok) { $warnings.Add("The transfer stopped before it finished (croc said: $why). Run PACK again for a new code, or carry the folder on a USB stick.") }
+  $ok
+}
+
+function Read-Code { Gap; Put '   Code (or just press Enter to stop):' title; if ($Test) { return '' }; ([Console]::ReadLine() + '').Trim() }
+function Receive-Folder {   # asks for the old laptop's code and receives its folder; returns that folder's path
+  Put "   There's no packed stuff in this folder yet." plain
+  Put '   If your old laptop is sending it over the internet, type the code it shows.' plain
+  Put '   (Carried it over instead? Open that folder and double-click  2 - UNPACK  in there.)' dim
+  for ($try = 1; $try -le 3; $try++) {
+    $c = if ($ReceiveCode) { $ReceiveCode } else { Read-Code }
+    if (-not $c) { throw "Nothing to unpack yet. Send it from the old laptop with 1 - PACK, or open the folder you carried over." }
+    if ($c -notmatch '^[A-Za-z0-9][A-Za-z0-9-]{4,63}$') {
+      Put "   That doesn't look like a code. It's a few words joined by dashes, like  joy-buzz-tiger" warn
+      if ($ReceiveCode) { break } else { continue }
+    }
+    $croc = Get-Croc
+    if (-not $croc) { throw 'Receiving needs croc. Carry the folder over on a USB stick instead.' }
+    $inbox = Join-Path $DesktopDir "Claude Moove received $stamp"
+    New-Item -ItemType Directory -Force $inbox | Out-Null
+    $text = ''
+    foreach ($extra in @(@('--internal-dns'), @())) {
+      $log = New-LogPath 'receive'; $t0 = Get-Date
+      $p = Start-Croc $croc (@('--ignore-stdin', '--yes', '--overwrite') + $extra + @('--out', (Q $inbox), $c)) $log
+      Wait-Walking $p { $pc = Get-Percent (Read-Log $log); if ($pc) { "Receiving...  $pc" } else { 'Connecting to your old laptop...' } } {
+        ((Get-Date) - $t0).TotalSeconds -gt 120 -and -not (Get-Percent (Read-Log $log)) }   # nobody sending: give up after 2 minutes
+      $text = Read-Log $log
+      Remove-Log $log
+      $found = Get-ChildItem -LiteralPath $inbox -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'engine\manifest.json') } | Select-Object -First 1
+      if ($p.ExitCode -eq 0 -and $found) { Put '   [x] Received from your old laptop.' ok; $script:received = $found.FullName; return $found.FullName }
+    }   # a failed first try gets a second one with Windows' DNS lookup, for networks that block outside DNS
+    if ($text -match 'rate limit') { Put "   croc's relay asked us to slow down. Wait a minute, then try the code again." warn }
+    else { Put "   That didn't work. Check the code on your old laptop (its window must still be open) and try again." warn }
+    Put ('   croc said: ' + (Get-LastLine $text)) dim
+    if ($ReceiveCode) { break }
+  }
+  throw "Couldn't receive anything from the old laptop. Run PACK there again for a fresh code, or carry the folder on a USB stick."
+}
+
 # ---------------------------------------------------------------- PACK (laptop you're leaving)
 function Invoke-Pack {
   $script:what = 'packing up this laptop'
-  $script:steps = 'Close Claude', 'Check your projects', 'Copy your Claude stuff', 'Zip it up', 'Make your transfer folder'
+  $script:steps = 'Close Claude', 'Check your projects', 'Copy your Claude stuff', 'Zip it up', 'Make your transfer folder', 'Send it to the new laptop'
   Show-Big @(
     'This packs ALL your Claude stuff into one folder you can carry to your next laptop:',
     'every chat and session, your global CLAUDE.md, settings, hooks, skills, plugins and memory.',
@@ -374,20 +488,35 @@ function Invoke-Pack {
   Remove-Tree $work; $script:work = $null
   Put '   [x] Transfer folder ready.' ok
 
-  Show-Big @(
-    "[x] All packed: $($metas.Count) sessions, $transcripts chat files, $mb MB.",
-    '',
-    'Your transfer folder is on your Desktop:',
-    "      Claude Moove $stamp",
-    '',
-    'WHAT NOW',
-    ' 1. Copy that whole folder to a USB stick (or upload it to Google Drive).',
-    " 2. On the new laptop, open the folder and double-click  2 - UNPACK (on the laptop you're moving to)",
-    '    It walks you through everything else.',
-    '',
-    'Keep that folder private: it holds your full chat history.')
-  if ($warnings.Count) { foreach ($w in $warnings) { Put "  [!] $w" warn } }
-  if (-not $Test) { Start-Process explorer.exe "/select,`"$dest`"" }
+  Set-Step 6
+  $how = $Transfer
+  if ($how -eq 'ask') {
+    if ($Test) { $how = 'usb' }
+    else {
+      Put '   How should it get to the new laptop?' plain
+      Put '     Enter   send it over the internet now, with a one-time code (the new laptop must be on)' plain
+      Put "     U       I'll carry the folder on a USB stick or drive" plain
+      $how = if ((Read-Answer 'Your choice:') -eq 'U') { 'usb' } else { 'send' }
+    }
+  }
+  $sent = ($how -eq 'send') -and (Send-Folder $dest)
+  if ($sent) { Put '   [x] Sent! The new laptop has everything.' ok } else { Put '   [x] Ready to carry.' ok }
+
+  $done = @("[x] All packed: $($metas.Count) sessions, $transcripts chat files, $mb MB.", '')
+  if ($sent) {
+    $done += '[x] Sent to the new laptop. UNPACK carries on there by itself.', '',
+      "A copy stays on your Desktop as  Claude Moove $stamp  in case you need it again.",
+      'Delete it once the new laptop is all set: it holds your full chat history.'
+  } else {
+    $done += 'Your transfer folder is on your Desktop:', "      Claude Moove $stamp", '', 'WHAT NOW',
+      ' 1. Copy that whole folder to a USB stick (or a cloud drive).',
+      " 2. On the new laptop, open the folder and double-click  2 - UNPACK (on the laptop you're moving to)",
+      '    It walks you through everything else.', '',
+      'Keep that folder private: it holds your full chat history.'
+  }
+  foreach ($w in $warnings) { $done += "[!] $w" }
+  Show-Big -Bloom $done
+  if (-not $Test -and -not $sent) { Start-Process explorer.exe "/select,`"$dest`"" }
   End-Wait
 }
 
@@ -555,7 +684,8 @@ function Invoke-Unpack {
   Set-Step 1
   $zip = Join-Path $engine 'claude-data.zip'; $mf = Join-Path $engine 'manifest.json'
   if (-not (Test-Path -LiteralPath $zip) -or -not (Test-Path -LiteralPath $mf)) {
-    throw "This folder has no packed Claude stuff in it. On your old laptop, double-click '1 - PACK', then bring over the folder it puts on the Desktop."
+    $got = Receive-Folder   # nothing carried over: receive it over the internet instead
+    $zip = Join-Path $got 'engine\claude-data.zip'; $mf = Join-Path $got 'engine\manifest.json'
   }
   $manifest = Read-Json $mf
   Put ('   [x] Packed on ' + $manifest.computer + ' at ' + ([datetime]$manifest.created).ToString('yyyy-MM-dd HH:mm') + ": $($manifest.sessions) sessions.") ok
@@ -750,9 +880,10 @@ function Invoke-Unpack {
 
   $final = @("[x] You're moved in. Open Claude: your sessions are in the sidebar.")
   if ($cnt.both) { $final += "[x] Used on both laptops: $(Plural $cnt.both 'chat'). You have both: the one from here, and the one marked '(other laptop)'.", "    The first time you open either, Claude gets a one-time note about what happened in the other." }
+  if ($script:received) { $final += "    The folder that came over is on your Desktop ($(Split-Path $script:received -Parent | Split-Path -Leaf)). Delete it once all looks right." }
   foreach ($w in $warnings) { $final += "[!] $w" }
   $final += '', "Next time you move: open 'Claude Moove' on your Desktop and double-click 1 - PACK."
-  Show-Big $final
+  Show-Big -Bloom $final
   End-Wait
 }
 
@@ -767,7 +898,7 @@ function Show-Fail([string]$msg) {
 
 function Invoke-Preview {   # draws each screen once, without doing anything, to check how they look
   $script:what = 'packing up this laptop'
-  $script:steps = 'Close Claude', 'Check your projects', 'Copy your Claude stuff', 'Zip it up', 'Make your transfer folder'
+  $script:steps = 'Close Claude', 'Check your projects', 'Copy your Claude stuff', 'Zip it up', 'Make your transfer folder', 'Send it to the new laptop'
   Write-Host '@@SCREEN The first thing you see'
   Show-Big @(
     'This packs ALL your Claude stuff into one folder you can carry to your next laptop:',
@@ -778,6 +909,20 @@ function Invoke-Preview {   # draws each screen once, without doing anything, to
   Set-Step 4
   Put '   [x] Copied 42 sessions and 120 chat files.' ok
   Put '   Zipping...  640 MB so far  2:13' plain
+  Write-Host '@@SCREEN Sending it over the internet with a one-time code'
+  Set-Step 6
+  Put '   [x] Transfer folder ready.' ok
+  Gap
+  Put '   Your code:   ' plain -n; Put 'joy-buzz-tiger' pink
+  Gap
+  Put '   On the NEW laptop:' title
+  Put "     1. Get Claude Moove there:  $homepage" plain
+  Put '        then double-click  2 - UNPACK' plain
+  Put '     2. When it asks, type the code above.' plain
+  Put '   Keep this window open until it says done.' dim
+  Put '   The code works once: only type it on your own laptop.' dim
+  Gap
+  Put '   Sending...  47%  1:12' plain
   Write-Host '@@SCREEN Unpacking on the new laptop (paths fixed and chats merged for you)'
   $script:what = 'moving in on this laptop'
   $script:steps = 'Find your packed stuff', 'Claude app installed', 'Signed in to the same account', 'Close Claude', 'Unpack and merge your chats', 'Node.js and Git', 'Your project folders'
@@ -789,7 +934,7 @@ function Invoke-Preview {   # draws each screen once, without doing anything, to
   Put "   [x] Updated because the other laptop's copy was newer: 3 sessions." ok
   Put '   [x] Used on BOTH laptops: 1 chat. You get both copies, nothing lost.' warn
   $script:what = 'packing up this laptop'
-  $script:steps = 'Close Claude', 'Check your projects', 'Copy your Claude stuff', 'Zip it up', 'Make your transfer folder'
+  $script:steps = 'Close Claude', 'Check your projects', 'Copy your Claude stuff', 'Zip it up', 'Make your transfer folder', 'Send it to the new laptop'
   Write-Host '@@SCREEN The end'
   Show-Big -Bloom @(
     '[x] All packed: 42 sessions, 120 chat files, 900 MB.',

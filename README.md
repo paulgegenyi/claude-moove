@@ -21,15 +21,19 @@
 ## How it works
 
 <p align="center">
-  <img src="docs/how-it-works.svg" width="720" alt="Pixel art: on the left a laptop showing a moving box, labelled 1 PACK. In the middle Clawd carries a box, labelled carry one folder. On the right a laptop shows a pink heart, labelled 2 UNPACK">
+  <img src="docs/how-it-works.svg" width="720" alt="Pixel art: on the left a laptop showing a moving box, labelled 1 PACK. In the middle Clawd carries a box, labelled send it or carry it. On the right a laptop shows a pink heart, labelled 2 UNPACK">
 </p>
 
 1. **Get it.** Click **Code → Download ZIP** on this page, then right-click the zip and choose **Extract All**.
-2. **Pack.** On the laptop you're leaving, double-click **`1 - PACK (on the laptop you're leaving)`**. About five minutes later, a `Claude Moove <date>` folder is waiting on your Desktop.
-3. **Carry.** Take that folder to the new laptop on a USB stick or a cloud drive. If it arrives as a zip, right-click it and choose **Extract All**.
-4. **Unpack.** On the new laptop, open the folder, double-click **`2 - UNPACK (on the laptop you're moving to)`** and follow along.
+2. **Pack.** On the laptop you're leaving, double-click **`1 - PACK (on the laptop you're leaving)`**. About five minutes later, everything is packed into a `Claude Moove <date>` folder on your Desktop.
+3. **Send it or carry it.** PACK offers to send the folder straight to the new laptop and shows you a one-time code like `joy-buzz-tiger`. Prefer a USB stick? Just carry the folder over instead.
+4. **Unpack.** On the new laptop, double-click **`2 - UNPACK (on the laptop you're moving to)`** and follow along. If you're sending, get Claude Moove there the same way as in step 1, then type the code when it asks. If you carried the folder, use the button inside it.
 
 That's the whole move 🎉 UNPACK even leaves the two buttons on your new Desktop, so next time is just as easy.
+
+<p align="center">
+  <img src="docs/screen-send.svg" width="700" alt="The PACK window at step 6 of 6, Send it to the new laptop: a one-time code in pink, joy-buzz-tiger, with instructions for the new laptop and the sending progress">
+</p>
 
 ## The little window
 
@@ -81,13 +85,31 @@ The exact rules are in [How it works](engine/README.md).
 - **Windows 10 or 11.** It looks its best in Windows Terminal, the default on Windows 11.
 - **The Claude desktop app and/or Claude Code**, signed in to the same account on both laptops.
 - **Nothing else.** It uses Windows' own PowerShell, robocopy and tar. Node.js is only needed for the one-time merge note (and for your own hooks, if they use it), and UNPACK offers to install it.
+- **Sending over the internet** uses [croc](https://github.com/schollz/croc), a small, free, open-source tool. If you choose to send, Claude Moove installs it for you from Windows' own app catalogue.
 
 ## Questions
 
 <details>
 <summary><b>Does anything get uploaded?</b></summary>
 <br>
-No. Your data only goes wherever you carry the folder. Treat that folder like a diary, though: it holds your full chat history.
+Only if you choose to send it over the internet, and then it's encrypted end to end (see the next question). If you carry it, your data only goes wherever you take the folder. Either way, treat that folder like a diary: it holds your full chat history.
+</details>
+
+<details>
+<summary><b>Is sending over the internet safe?</b></summary>
+<br>
+Sending uses <a href="https://github.com/schollz/croc">croc</a>, which encrypts everything end to end with your one-time code:
+<ul>
+<li>Nothing is opened on either laptop for anyone to connect to. Both only reach out, directly if they're on the same Wi-Fi, otherwise through croc's free relay.</li>
+<li>The relay passes the data along but can't read it.</li>
+<li>Guessing the code isn't practical, because each attempt is a one-shot.</li>
+</ul>
+A few things to know:
+<ul>
+<li>Both laptops need to be on at the same time.</li>
+<li>Whoever types the code first gets the folder, so don't post it anywhere.</li>
+<li>If croc's relay is ever down, the USB stick still works.</li>
+</ul>
 </details>
 
 <details>

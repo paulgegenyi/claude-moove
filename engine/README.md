@@ -2,7 +2,7 @@
 
 Start with the main [README](../README.md) for what Claude Moove does, how to use it, and what moves.
 
-- **1 - PACK** (laptop you're leaving) makes `Claude Moove <date>` on the Desktop. It holds both buttons, this engine, the licence, `engine/claude-data.zip` and `engine/manifest.json`.
+- **1 - PACK** (laptop you're leaving) makes `Claude Moove <date>` on the Desktop. It holds both buttons, this engine, the licence, `engine/claude-data.zip` and `engine/manifest.json`. It can then send that folder straight to the new laptop (see [Sending over the internet](#sending-over-the-internet-croc)).
 - **2 - UNPACK** (laptop you're moving to) restores that data and merges it with whatever is already there. It then leaves a copy of the buttons (without data) in `Claude Moove` on that Desktop for the next move.
 
 ## Files
@@ -41,14 +41,31 @@ Matching is case-insensitive and never inside a longer name, so `Alex` doesn't m
 - **PACK** closes Claude, then warns about project folders whose work isn't on GitHub yet.
 - **UNPACK** checks that Claude is installed (opening the download page if not) and that you're signed in to the same account, then closes Claude. It offers to install Node.js and Git with winget and to `git clone` missing project folders into their new paths. Finally it lists anything still to copy by hand.
 
+## Sending over the internet (croc)
+
+PACK's last step offers to send the transfer folder instead of carrying it. UNPACK receives it when there's no packed data next to its engine.
+
+- It uses [croc](https://github.com/schollz/croc) (MIT), version 10 or newer. If it's missing or too old, it is installed or upgraded with `winget` (`schollz.croc`), and only after the user agrees.
+- The transfer is end to end encrypted with the one-time code (a password-authenticated key exchange), and neither laptop opens a port. On the same network the two connect directly. Otherwise they meet on one of croc's relays: the sender picks the fastest one, and that choice is baked into the code.
+- **Send:** `croc --ignore-stdin --disable-clipboard --internal-dns send "<folder>"`. The code is read from the `getcroc.com/?code=` line croc prints. The window shows the code and the steps for the new laptop, then Clawd walks while it sends.
+- **Receive:** `croc --ignore-stdin --yes --overwrite --internal-dns --out "<Desktop>\Claude Moove received <date>" <code>`.
+  - The code must be letters, digits and dashes (5 to 64 characters), so it can never be read as a croc option.
+  - On Windows croc takes the code as an argument; `CROC_SECRET` is ignored when receiving.
+  - The attempt gives up after 2 minutes with no progress.
+  - The received folder stays on the Desktop until the user deletes it.
+- **Why `--internal-dns` comes first:** croc gives a relay lookup only about 1 second, and Windows' own lookup can take longer. If that first attempt fails, a second one uses Windows' lookup, for networks that block outside DNS.
+- **One shot:** a sender that sees a failed attempt with its code may stop waiting, so a broken transfer means running PACK again for a fresh code.
+- On failure, both sides show croc's last message, and the relay's "rate limited" answer gets its own "wait a minute" hint.
+
 ## Testing without touching real data
 
 - **Screens only:** `powershell -File engine\claude-moove.ps1 -Mode preview` draws each screen once.
-- **Unattended runs:** add `-Test`. Point `-HomeDir`, `-AppDataDir`, `-DesktopDir` and `-DocumentsDir` at a throwaway folder that contains `AppData\Roaming\Claude\config.json` with a `lastKnownAccountUuid`. Use `-OutDir` to choose where pack puts its folder. In test runs nothing is closed, opened, installed or downloaded.
+- **Unattended runs:** add `-Test`. Point `-HomeDir`, `-AppDataDir`, `-DesktopDir` and `-DocumentsDir` at a throwaway folder that contains `AppData\Roaming\Claude\config.json` with a `lastKnownAccountUuid`. Use `-OutDir` to choose where pack puts its folder. In test runs nothing is closed, opened or installed. Pack carries rather than sends unless you add `-Transfer send`; it then prints `CROC-CODE:<code>` for the test to pick up. Unpack takes that code through `-ReceiveCode`.
 - **Cases worth covering:**
   - a fresh laptop with a different user name and a OneDrive Desktop
   - a second unpack where one chat is newer on each side and one chat was continued on both
   - the merge hook, run by hand with a SessionStart input for each copy
+  - sending: pack a tiny fake profile with `-Transfer send`, then unpack from a fresh copy of the tool (no data) with `-ReceiveCode` into another fake profile
 
 ## Known limits
 
