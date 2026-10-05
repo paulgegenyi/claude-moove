@@ -3,7 +3,7 @@
 # What it moves and how it merges: README.md next to this file. This file is plain ASCII on purpose;
 # Clawd's block characters are built from character codes so any Windows can read it.
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('pack', 'unpack', 'preview')][string]$Mode,
+  [Parameter(Mandatory = $true)][ValidateSet('menu', 'pack', 'unpack', 'preview')][string]$Mode,
   # This laptop's folders. The defaults are the real ones; tests point them somewhere else.
   [string]$HomeDir = $env:USERPROFILE,
   [string]$AppDataDir = $env:APPDATA,
@@ -23,6 +23,7 @@ $marker    = Join-Path $claudeDir 'claude-moove-synced.json'
 $utf8      = New-Object System.Text.UTF8Encoding($false)
 $warnings  = New-Object System.Collections.Generic.List[string]
 $homepage  = 'https://github.com/paulgegenyi/claude-moove'
+$oneLiner  = 'irm https://raw.githubusercontent.com/paulgegenyi/claude-moove/main/moove.ps1 | iex'
 $script:work = $null
 $script:received = $null
 
@@ -350,10 +351,9 @@ function Send-Folder([string]$folder) {   # returns $true once the new laptop ha
   Gap
   Put '   Your code:   ' plain -n; Put $code pink
   Gap
-  Put '   On the NEW laptop:' title
-  Put "     1. Get Claude Moove there:  $homepage" plain
-  Put '        then double-click  2 - UNPACK' plain
-  Put '     2. When it asks, type the code above.' plain
+  Put '   On the NEW laptop, open PowerShell and paste:' title
+  Put "     $oneLiner" plain
+  Put '   then choose  2  (move in) and type the code above when it asks.' plain
   Put '   Keep this window open until it says done.' dim
   Put '   The code works once: only type it on your own laptop.' dim
   if ($Test) { Write-Host "CROC-CODE:$code" }   # lets an unattended test pick the code up
@@ -366,14 +366,27 @@ function Send-Folder([string]$folder) {   # returns $true once the new laptop ha
   $ok
 }
 
+function Find-PackedFolders {   # packed folders on this PC or a plugged-in drive, newest first
+  $places = @($DesktopDir, (Join-Path $HomeDir 'Downloads'), $DocumentsDir) +
+    @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | Where-Object { $_.Root -ne "$env:SystemDrive\" } | ForEach-Object Root)
+  $hits = foreach ($p in $places) {
+    if (-not $p -or -not (Test-Path -LiteralPath $p)) { continue }
+    foreach ($d in Get-ChildItem -LiteralPath $p -Directory -Filter 'Claude Moove*' -ErrorAction SilentlyContinue) {
+      # also one level down: a zip extracted into a folder of the same name, or a folder received with croc
+      foreach ($c in @($d) + @(Get-ChildItem -LiteralPath $d.FullName -Directory -Filter 'Claude Moove*' -ErrorAction SilentlyContinue)) {
+        if (Test-Path -LiteralPath (Join-Path $c.FullName 'engine\claude-data.zip')) { $c }
+      }
+    }
+  }
+  @($hits | Sort-Object LastWriteTime -Descending)
+}
 function Read-Code { Gap; Put '   Code (or just press Enter to stop):' title; if ($Test) { return '' }; ([Console]::ReadLine() + '').Trim() }
 function Receive-Folder {   # asks for the old laptop's code and receives its folder; returns that folder's path
-  Put "   There's no packed stuff in this folder yet." plain
+  Put "   I couldn't find a packed folder on this PC or a plugged-in drive." plain
   Put '   If your old laptop is sending it over the internet, type the code it shows.' plain
-  Put '   (Carried it over instead? Open that folder and double-click  2 - UNPACK  in there.)' dim
   for ($try = 1; $try -le 3; $try++) {
     $c = if ($ReceiveCode) { $ReceiveCode } else { Read-Code }
-    if (-not $c) { throw "Nothing to unpack yet. Send it from the old laptop with 1 - PACK, or open the folder you carried over." }
+    if (-not $c) { throw 'Nothing to unpack yet. Pack on the old laptop first, then send it, or plug in the drive you carried it on.' }
     if ($c -notmatch '^[A-Za-z0-9][A-Za-z0-9-]{4,63}$') {
       Put "   That doesn't look like a code. It's a few words joined by dashes, like  joy-buzz-tiger" warn
       if ($ReceiveCode) { break } else { continue }
@@ -402,14 +415,16 @@ function Receive-Folder {   # asks for the old laptop's code and receives its fo
 }
 
 # ---------------------------------------------------------------- PACK (laptop you're leaving)
-function Invoke-Pack {
+function Invoke-Pack([switch]$FromMenu) {
   $script:what = 'packing up this laptop'
   $script:steps = 'Close Claude', 'Check your projects', 'Copy your Claude stuff', 'Zip it up', 'Make your transfer folder', 'Send it to the new laptop'
-  Show-Big @(
-    'This packs ALL your Claude stuff into one folder you can carry to your next laptop:',
-    'every chat and session, your global CLAUDE.md, settings, hooks, skills, plugins and memory.',
-    'It takes about 5 minutes.')
-  Wait-Enter 'Press Enter to start.'
+  if (-not $FromMenu) {
+    Show-Big @(
+      'This packs ALL your Claude stuff into one folder you can carry to your next laptop:',
+      'every chat and session, your global CLAUDE.md, settings, hooks, skills, plugins and memory.',
+      'It takes about 5 minutes.')
+    Wait-Enter 'Press Enter to start.'
+  }
 
   Set-Step 1
   $claudeOpen = Close-Claude
@@ -474,6 +489,7 @@ function Invoke-Pack {
   Put "   [x] Zipped: $mb MB." ok
 
   Set-Step 5
+  # The buttons travel too: on a pendrive they're plain local files, so Windows doesn't flag them on the new laptop.
   Get-ChildItem -LiteralPath $toolRoot -Filter '*.cmd' | Copy-Item -Destination $dest
   Copy-One (Join-Path $toolRoot 'LICENSE') $dest
   foreach ($f in 'claude-moove.ps1', 'claude-moove-merge.mjs', 'README.md') { Copy-Item -LiteralPath (Join-Path $engine $f) (Join-Path $dest "engine\$f") }
@@ -504,14 +520,15 @@ function Invoke-Pack {
 
   $done = @("[x] All packed: $($metas.Count) sessions, $transcripts chat files, $mb MB.", '')
   if ($sent) {
-    $done += '[x] Sent to the new laptop. UNPACK carries on there by itself.', '',
+    $done += '[x] Sent to the new laptop. It carries on there by itself.', '',
       "A copy stays on your Desktop as  Claude Moove $stamp  in case you need it again.",
       'Delete it once the new laptop is all set: it holds your full chat history.'
   } else {
     $done += 'Your transfer folder is on your Desktop:', "      Claude Moove $stamp", '', 'WHAT NOW',
       ' 1. Copy that whole folder to a USB stick (or a cloud drive).',
       " 2. On the new laptop, open the folder and double-click  2 - UNPACK (on the laptop you're moving to)",
-      '    It walks you through everything else.', '',
+      '    or open PowerShell, paste this line and choose  2  (it finds the folder by itself):',
+      "      $oneLiner", '',
       'Keep that folder private: it holds your full chat history.'
   }
   foreach ($w in $warnings) { $done += "[!] $w" }
@@ -672,19 +689,31 @@ function Merge-Sessions([string]$sa) {
 }
 
 # ---------------------------------------------------------------- UNPACK (laptop you're moving to)
-function Invoke-Unpack {
+function Invoke-Unpack([switch]$FromMenu) {
   $script:what = 'moving in on this laptop'
   $script:steps = 'Find your packed stuff', 'Claude app installed', 'Signed in to the same account', 'Close Claude', 'Unpack and merge your chats', 'Node.js and Git', 'Your project folders'
-  Show-Big @(
-    'This moves all your Claude stuff onto THIS laptop: every chat and session, your global',
-    'CLAUDE.md, settings, hooks, skills, plugins and memory. Nothing already here gets lost.',
-    'It takes about 5 minutes, and I check everything as we go.')
-  Wait-Enter 'Press Enter to start.'
+  if (-not $FromMenu) {
+    Show-Big @(
+      'This moves all your Claude stuff onto THIS laptop: every chat and session, your global',
+      'CLAUDE.md, settings, hooks, skills, plugins and memory. Nothing already here gets lost.',
+      'It takes about 5 minutes, and I check everything as we go.')
+    Wait-Enter 'Press Enter to start.'
+  }
 
   Set-Step 1
   $zip = Join-Path $engine 'claude-data.zip'; $mf = Join-Path $engine 'manifest.json'
   if (-not (Test-Path -LiteralPath $zip) -or -not (Test-Path -LiteralPath $mf)) {
-    $got = Receive-Folder   # nothing carried over: receive it over the internet instead
+    $got = $null
+    if (-not $ReceiveCode) {   # a folder carried over on a stick or downloaded: find it by itself
+      $cand = @(Find-PackedFolders)
+      if ($cand.Count) {
+        $m0 = Read-Json (Join-Path $cand[0].FullName 'engine\manifest.json')
+        Put ('   Found your packed stuff:  ' + $cand[0].FullName) plain
+        Put ('   (packed on ' + $m0.computer + ' at ' + ([datetime]$m0.created).ToString('yyyy-MM-dd HH:mm') + ", $($m0.sessions) sessions)") dim
+        if ((Read-Answer 'Press Enter to use it, or type C and Enter to receive one over the internet instead.') -ne 'C') { $got = $cand[0].FullName }
+      }
+    }
+    if (-not $got) { $got = Receive-Folder }   # nothing carried over: receive it over the internet instead
     $zip = Join-Path $got 'engine\claude-data.zip'; $mf = Join-Path $got 'engine\manifest.json'
   }
   $manifest = Read-Json $mf
@@ -731,7 +760,14 @@ function Invoke-Unpack {
   Wait-Walking $p { 'Unpacking...' }
   if ($p.ExitCode -ne 0) { throw "Couldn't unpack claude-data.zip (tar code $($p.ExitCode)). It may be damaged: copy the folder over again." }
   $sh = Join-Path $work 'home'; $sa = Join-Path $work 'appdata\Claude'
-  $firstMoove = -not (Test-Path -LiteralPath $marker)   # first time here: the packed settings replace the fresh install's defaults
+  # A brand-new install takes the packed settings and sidebar layout as they are. A PC that already has its own
+  # Claude chats is only ever merged into: settings go newer-wins one by one, and its own sidebar layout stays.
+  $hasSessions = [bool](Get-ChildItem -LiteralPath "$claudeDir\claude-code-sessions" -Recurse -File -Filter 'local_*.json' -ErrorAction SilentlyContinue | Select-Object -First 1)
+  $hasChats = [bool](Get-ChildItem -LiteralPath "$HomeDir\.claude\projects" -Directory -ErrorAction SilentlyContinue |
+      Where-Object { Get-ChildItem -LiteralPath $_.FullName -File -Filter *.jsonl -ErrorAction SilentlyContinue | Select-Object -First 1 } | Select-Object -First 1)
+  $livedIn = $hasSessions -or $hasChats
+  $firstMoove = -not $livedIn -and -not (Test-Path -LiteralPath $marker)
+  if ($livedIn) { Put '   [x] This PC already has its own Claude chats: merging into them, nothing here gets deleted.' ok }
 
   $pairs = @(Set-PathMap $manifest)
   if ($pairs.Count) {
@@ -752,8 +788,8 @@ function Invoke-Unpack {
   Merge-Transcripts $sh $referenced
   Merge-Sessions $sa
 
-  # Settings and instruction files. Normally the newer copy wins. On a laptop's first unpack the packed ones win,
-  # because what's there is just a fresh install. Anything replaced is saved in the safety folder first.
+  # Settings and instruction files. Normally the newer copy wins. On a brand-new install the packed ones win,
+  # because what's there is just the install's defaults. Anything replaced is saved in the safety folder first.
   $safety = Join-Path $HomeDir ".claude-moove-safety\$stamp"
   $config = @()
   $config += Get-ChildItem -LiteralPath "$sh\.claude" -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in '.json', '.md' }
@@ -781,14 +817,12 @@ function Invoke-Unpack {
     New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
     Copy-Item -LiteralPath $f.FullName $dest -Force
   }
-  # The sidebar layout is a small database: it's swapped whole (never mixed), and only for a newer one.
+  # The sidebar layout is a small database that can't be mixed, so only a brand-new install gets the old laptop's.
+  # Anywhere else this PC keeps its own (its sessions all still show up; only grouping and pins are layout).
   $lsS = "$sa\Local Storage"; $lsT = "$claudeDir\Local Storage"
-  if (Test-Path -LiteralPath $lsS) {
-    $newest = { param($d) (Get-ChildItem -LiteralPath $d -Recurse -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc | Select-Object -Last 1).LastWriteTimeUtc }
-    if ($firstMoove -or -not (Test-Path -LiteralPath $lsT) -or ((& $newest $lsS) -gt (& $newest $lsT))) {
-      if (Test-Path -LiteralPath $lsT) { New-Item -ItemType Directory -Force $safety | Out-Null; Move-Item -LiteralPath $lsT (Join-Path $safety 'Local Storage'); $replaced++ }
-      Copy-Tree $lsS $lsT 'Putting your sidebar layout in place...'
-    }
+  if ((Test-Path -LiteralPath $lsS) -and ($firstMoove -or -not (Test-Path -LiteralPath $lsT))) {
+    if (Test-Path -LiteralPath $lsT) { New-Item -ItemType Directory -Force $safety | Out-Null; Move-Item -LiteralPath $lsT (Join-Path $safety 'Local Storage'); $replaced++ }
+    Copy-Tree $lsS $lsT 'Putting your sidebar layout in place...'
   }
   if ($script:pending.Count) {
     $pf = Join-Path $HomeDir '.claude\claude-moove\pending-merges.json'
@@ -869,22 +903,25 @@ function Invoke-Unpack {
       elseif ($m.unsaved -gt 0) { $warnings.Add("'$name' came from GitHub, but its $($m.unsaved) unsaved changes from the old laptop aren't in it. Copy them over if you need them.") }
     }
   }
-  # Keep the buttons on this laptop's Desktop for the next move.
-  $keepTool = Join-Path $DesktopDir 'Claude Moove'
-  if ($toolRoot.TrimEnd('\') -ne $keepTool) {
-    New-Item -ItemType Directory -Force (Join-Path $keepTool 'engine') | Out-Null
-    Get-ChildItem -LiteralPath $toolRoot -Filter '*.cmd' | Copy-Item -Destination $keepTool -Force
-    Copy-One (Join-Path $toolRoot 'LICENSE') $keepTool
-    foreach ($f in 'claude-moove.ps1', 'claude-moove-merge.mjs', 'README.md') { Copy-Item -LiteralPath (Join-Path $engine $f) (Join-Path $keepTool "engine\$f") -Force }
-  }
-
   $final = @("[x] You're moved in. Open Claude: your sessions are in the sidebar.")
   if ($cnt.both) { $final += "[x] Used on both laptops: $(Plural $cnt.both 'chat'). You have both: the one from here, and the one marked '(other laptop)'.", "    The first time you open either, Claude gets a one-time note about what happened in the other." }
   if ($script:received) { $final += "    The folder that came over is on your Desktop ($(Split-Path $script:received -Parent | Split-Path -Leaf)). Delete it once all looks right." }
   foreach ($w in $warnings) { $final += "[!] $w" }
-  $final += '', "Next time you move: open 'Claude Moove' on your Desktop and double-click 1 - PACK."
+  $final += '', 'Next time you move, paste the same line into PowerShell and choose  1  (pack up):', "      $oneLiner"
   Show-Big -Bloom $final
   End-Wait
+}
+
+function Invoke-Menu {   # what the one-line command opens
+  Show-Big @(
+    "Hi! I move all your Claude stuff from one Windows laptop to another. What are we doing?", '',
+    '   1   Pack up THIS laptop      (the one you are leaving)',
+    '   2   Move in on THIS laptop   (the one you are moving to)')
+  switch (Read-Answer 'Type 1 or 2 and press Enter:') {
+    '1' { Invoke-Pack -FromMenu }
+    '2' { Invoke-Unpack -FromMenu }
+    default { Put '   Nothing was changed. See you on moving day!' dim; End-Wait }
+  }
 }
 
 function Show-Fail([string]$msg) {
@@ -901,10 +938,10 @@ function Invoke-Preview {   # draws each screen once, without doing anything, to
   $script:steps = 'Close Claude', 'Check your projects', 'Copy your Claude stuff', 'Zip it up', 'Make your transfer folder', 'Send it to the new laptop'
   Write-Host '@@SCREEN The first thing you see'
   Show-Big @(
-    'This packs ALL your Claude stuff into one folder you can carry to your next laptop:',
-    'every chat and session, your global CLAUDE.md, settings, hooks, skills, plugins and memory.',
-    'It takes about 5 minutes.')
-  Wait-Enter 'Press Enter to start.'
+    "Hi! I move all your Claude stuff from one Windows laptop to another. What are we doing?", '',
+    '   1   Pack up THIS laptop      (the one you are leaving)',
+    '   2   Move in on THIS laptop   (the one you are moving to)')
+  Wait-Enter 'Type 1 or 2 and press Enter:'
   Write-Host '@@SCREEN Every step after that (Clawd stays at the top, the flowers bloom as you go)'
   Set-Step 4
   Put '   [x] Copied 42 sessions and 120 chat files.' ok
@@ -915,10 +952,9 @@ function Invoke-Preview {   # draws each screen once, without doing anything, to
   Gap
   Put '   Your code:   ' plain -n; Put 'joy-buzz-tiger' pink
   Gap
-  Put '   On the NEW laptop:' title
-  Put "     1. Get Claude Moove there:  $homepage" plain
-  Put '        then double-click  2 - UNPACK' plain
-  Put '     2. When it asks, type the code above.' plain
+  Put '   On the NEW laptop, open PowerShell and paste:' title
+  Put "     $oneLiner" plain
+  Put '   then choose  2  (move in) and type the code above when it asks.' plain
   Put '   Keep this window open until it says done.' dim
   Put '   The code works once: only type it on your own laptop.' dim
   Gap
@@ -940,14 +976,14 @@ function Invoke-Preview {   # draws each screen once, without doing anything, to
     '[x] All packed: 42 sessions, 120 chat files, 900 MB.',
     'Your transfer folder is on your Desktop:  Claude Moove 2026-01-01 1200',
     'WHAT NOW',
-    ' 1. Copy that whole folder to a USB stick (or upload it to Google Drive).',
-    " 2. On the new laptop, open it and double-click  2 - UNPACK (on the laptop you're moving to)",
+    ' 1. Copy that whole folder to a USB stick (or a cloud drive).',
+    " 2. On the new laptop, open it and double-click  2 - UNPACK  (or paste the one line and choose 2)",
     'Keep that folder private: it holds your full chat history.')
   End-Wait
 }
 
 try {
-  switch ($Mode) { 'pack' { Invoke-Pack } 'unpack' { Invoke-Unpack } 'preview' { Invoke-Preview } }
+  switch ($Mode) { 'menu' { Invoke-Menu } 'pack' { Invoke-Pack } 'unpack' { Invoke-Unpack } 'preview' { Invoke-Preview } }
   Remove-Tree $script:work
   exit 0
 } catch {

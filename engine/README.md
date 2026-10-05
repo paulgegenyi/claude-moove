@@ -2,14 +2,26 @@
 
 Start with the main [README](../README.md) for what Claude Moove does, how to use it, and what moves.
 
-- **1 - PACK** (laptop you're leaving) makes `Claude Moove <date>` on the Desktop. It holds both buttons, this engine, the licence, `engine/claude-data.zip` and `engine/manifest.json`. It can then send that folder straight to the new laptop (see [Sending over the internet](#sending-over-the-internet-croc)).
-- **2 - UNPACK** (laptop you're moving to) restores that data and merges it with whatever is already there. It then leaves a copy of the buttons (without data) in `Claude Moove` on that Desktop for the next move.
+- **Pack** (laptop you're leaving) makes `Claude Moove <date>` on the Desktop. It holds both buttons, this engine, the licence, `engine/claude-data.zip` and `engine/manifest.json`. It can then send that folder straight to the new laptop (see [Sending over the internet](#sending-over-the-internet-croc)).
+- **Unpack** (laptop you're moving to) restores that data and merges it with whatever is already there.
+
+## Starting it
+
+- **The one-liner** pipes `../moove.ps1` into `iex`. It downloads the repo's `main` branch zip with `Invoke-WebRequest` into `%LOCALAPPDATA%\Claude Moove`, replacing any older copy, then runs the engine with `-Mode menu`. Nothing passes through a browser, so the files carry no download mark and Windows shows no SmartScreen warning.
+- **From a clone,** `powershell -ExecutionPolicy Bypass -File moove.ps1` uses that copy, and any arguments are passed through to the engine.
+- **The menu** asks "1 pack up / 2 move in" and starts pack or unpack without their own welcome screen.
+- **The buttons** (`1 - PACK ...cmd`, `2 - UNPACK ...cmd`) run the engine directly. PACK copies them into every transfer folder: on a pendrive they're local files, so Windows doesn't flag them. Downloaded from GitHub as a zip, they do get flagged.
+- **Where unpack finds its data,** in this order:
+  1. next to its own engine (started from the transfer folder's button)
+  2. a `Claude Moove*` folder with `engine\claude-data.zip`, directly or one level down, on the Desktop, in Downloads or Documents, or at the root of any other drive (pendrives); the newest one is offered first
+  3. a croc code typed by the user
 
 ## Files
 
 | File | Job |
 |---|---|
-| `claude-moove.ps1` | Does all the work: `-Mode pack`, `unpack` or `preview` |
+| `../moove.ps1` | The one-line launcher: fetch the latest copy (or use the clone), then open the menu |
+| `claude-moove.ps1` | Does all the work: `-Mode menu`, `pack`, `unpack` or `preview` |
 | `claude-moove-merge.mjs` | The one-time merge note hook, plus `--install [settings.json]` to register it |
 | `manifest.json` (packed folders only) | Where things lived on the old laptop, the account, and the project folders with their GitHub links |
 | `claude-data.zip` (packed folders only) | The data |
@@ -21,8 +33,9 @@ Start with the main [README](../README.md) for what Claude Moove does, how to us
 - **Chats.** Transcript files only ever grow, so if one laptop's copy is the start of the other's, the longer one wins. If both grew differently, meaning the same chat was used on both laptops, both are kept. This laptop's copy stays as it is. The other is added as a separate chat with a new ID, and its Code tab entry is titled "... (other laptop)".
 - **Merge note.** For each such pair, a note is saved in `~/.claude/claude-moove/pending-merges.json`, and `claude-moove-merge.mjs` is registered as a SessionStart hook. The first time either copy is opened, Claude gets the other copy's messages from after the split, and the user sees a short message. Each note is then deleted. With no notes waiting, the hook exits immediately.
 - **Code tab session list.** Each entry follows its chat. If one side rewound or forked into a new chat file, the side that moved on from an untouched copy of the other counts as newer. Anything archived on either laptop stays archived.
-- **Settings and instructions** (`settings.json`, `CLAUDE.md`, `AGENTS.md`, `.claude.json`, plugin lists, app preferences). The newer file wins, except on a laptop's first unpack, where the packed ones win because what's there is a fresh install. Every replaced file is saved first in `~/.claude-moove-safety/<date>/`.
-- **Sidebar layout** (the app's Local Storage database). It is swapped whole and only for a newer one, with the old one moved to the safety folder.
+- **Brand-new or lived-in.** A PC counts as lived-in when it already has Code tab sessions or Claude Code chats. A lived-in PC is only ever merged into, and the window says so. A brand-new install (no chats, never packed or unpacked before) takes the packed settings and sidebar layout as they are.
+- **Settings and instructions** (`settings.json`, `CLAUDE.md`, `AGENTS.md`, `.claude.json`, plugin lists, app preferences). The newer file wins, except on a brand-new install, where the packed ones win because what's there is just the install's defaults. Every replaced file is saved first in `~/.claude-moove-safety/<date>/`.
+- **Sidebar layout** (the app's Local Storage database). It can't be mixed, so only a brand-new install, or a PC without one, gets the old laptop's (any existing one is moved to the safety folder). Everywhere else the PC keeps its own. Its sessions all still show up; only grouping and pins are layout.
 - **Everything else** merges file by file, and never overwrites a newer file.
 - `%APPDATA%\Claude\claude-moove-synced.json` marks a laptop that has packed or unpacked before.
 
@@ -43,7 +56,7 @@ Matching is case-insensitive and never inside a longer name, so `Alex` doesn't m
 
 ## Sending over the internet (croc)
 
-PACK's last step offers to send the transfer folder instead of carrying it. UNPACK receives it when there's no packed data next to its engine.
+PACK's last step offers to send the transfer folder instead of carrying it. UNPACK receives it when it can't find a packed folder (see [Starting it](#starting-it)).
 
 - It uses [croc](https://github.com/schollz/croc) (MIT), version 10 or newer. If it's missing or too old, it is installed or upgraded with `winget` (`schollz.croc`), and only after the user agrees.
 - The transfer is end to end encrypted with the one-time code (a password-authenticated key exchange), and neither laptop opens a port. On the same network the two connect directly. Otherwise they meet on one of croc's relays: the sender picks the fastest one, and that choice is baked into the code.
@@ -66,6 +79,8 @@ PACK's last step offers to send the transfer folder instead of carrying it. UNPA
   - a second unpack where one chat is newer on each side and one chat was continued on both
   - the merge hook, run by hand with a SessionStart input for each copy
   - sending: pack a tiny fake profile with `-Transfer send`, then unpack from a fresh copy of the tool (no data) with `-ReceiveCode` into another fake profile
+  - a lived-in destination: its own chat, settings and sidebar layout must survive
+  - the launcher from a clone (`moove.ps1 -Mode unpack -Test ...`), with a packed folder on the fake Desktop that unpack must find by itself; `-Mode menu -Test` must change nothing
 
 ## Known limits
 
