@@ -4,6 +4,7 @@ Start with [README.md](README.md) (what Claude Moove does) and [engine/README.md
 
 - `engine/claude-moove.ps1` must run on Windows PowerShell 5.1 and stay plain ASCII. Build special characters from character codes, as the Clawd art does.
 - The two `.cmd` buttons must keep CRLF line endings. `.gitattributes` stores them byte for byte.
+- Releases: tag `vX.Y.Z` and attach `claude-moove.zip`, built with `git archive` from the user-facing files only (the two buttons, `engine/`, `moove.ps1`, `LICENSE`, `README.md`), at the zip's root. Keep that asset name, so the README's `releases/latest/download/claude-moove.zip` link keeps working.
 - `moove.ps1` is piped into `iex` by users. Keep it short and readable, with no side effects beyond fetching into `%LOCALAPPDATA%\Claude Moove` and starting the engine. It must also work when run from a clone, passing its arguments through.
 - Never commit packed data (`claude-data.zip`, `manifest.json`) or anything personal: no real user names, paths, session titles or account IDs in code, docs or examples.
 - Test screens with `-Mode preview`. Test packing and unpacking with `-Test`, pointing `-HomeDir`, `-AppDataDir`, `-DesktopDir` and `-DocumentsDir` at a throwaway folder. Never unpack into a real profile while testing.

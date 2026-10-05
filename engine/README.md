@@ -10,7 +10,7 @@ Start with the main [README](../README.md) for what Claude Moove does, how to us
 - **The one-liner** pipes `../moove.ps1` into `iex`. It downloads the repo's `main` branch zip with `Invoke-WebRequest` into `%LOCALAPPDATA%\Claude Moove`, replacing any older copy, then runs the engine with `-Mode menu`. Nothing passes through a browser, so the files carry no download mark and Windows shows no SmartScreen warning.
 - **From a clone,** `powershell -ExecutionPolicy Bypass -File moove.ps1` uses that copy, and any arguments are passed through to the engine.
 - **The menu** asks "1 pack up / 2 move in" and starts pack or unpack without their own welcome screen.
-- **The buttons** (`1 - PACK ...cmd`, `2 - UNPACK ...cmd`) run the engine directly. PACK copies them into every transfer folder: on a pendrive they're local files, so Windows doesn't flag them. Downloaded from GitHub as a zip, they do get flagged.
+- **The buttons** (`1 - PACK ...cmd`, `2 - UNPACK ...cmd`) run the engine directly. PACK copies them into every transfer folder: on a pendrive they're local files, so Windows doesn't flag them. Downloaded through a browser (the release's `claude-moove.zip`, or the repo zip), they do get flagged.
 - **Where unpack finds its data,** in this order:
   1. next to its own engine (started from the transfer folder's button)
   2. a `Claude Moove*` folder with `engine\claude-data.zip`, directly or one level down, on the Desktop, in Downloads or Documents, or at the root of any other drive (pendrives); the newest one is offered first

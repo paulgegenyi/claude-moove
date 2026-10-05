@@ -24,34 +24,45 @@
   <img src="docs/how-it-works.svg" width="720" alt="Pixel art: on the left a laptop showing a moving box, labelled 1 PACK. In the middle Clawd carries a box, labelled send it or carry it. On the right a laptop shows a pink heart, labelled 2 UNPACK">
 </p>
 
-**On the laptop you're leaving,** open PowerShell and paste:
+**On the laptop you're leaving,** start Claude Moove (see below) and choose **1** (pack up). About five minutes later, everything is packed into a `Claude Moove <date>` folder on your Desktop. It then offers to **send** that folder straight to the new laptop with a one-time code like `joy-buzz-tiger`, or you carry it over on a pendrive.
+
+**On the laptop you're moving to,** start it the same way and choose **2** (move in). If you carried the folder, it finds it by itself, on the Desktop, in Downloads or on a plugged-in pendrive. If you're sending, it asks for the code.
+
+That's the whole move 🎉
+
+<p align="center">
+  <img src="docs/screen-send.svg" width="700" alt="The PACK window at step 6 of 6, Send it to the new laptop: a one-time code in pink, joy-buzz-tiger, with the line to paste on the new laptop and the sending progress">
+</p>
+
+## Start it
+
+Pick whichever you like. All three do exactly the same thing.
+
+### CMD
+
+Open **Command Prompt** (press Start, type `cmd`, press Enter) and paste:
+
+```bat
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/paulgegenyi/claude-moove/main/moove.ps1 | iex"
+```
+
+### PowerShell
+
+Open **PowerShell** (press Start, type `powershell`, press Enter) and paste:
 
 ```powershell
 irm https://raw.githubusercontent.com/paulgegenyi/claude-moove/main/moove.ps1 | iex
 ```
 
-Choose **1** (pack up). About five minutes later, everything is packed into a `Claude Moove <date>` folder on your Desktop. It then offers to **send** that folder straight to the new laptop with a one-time code like `joy-buzz-tiger`, or you carry it over on a pendrive.
+### Manual
 
-**On the laptop you're moving to,** paste the same line and choose **2** (move in). If you carried the folder, it finds it by itself, on the Desktop, in Downloads or on a plugged-in pendrive. If you're sending, it asks for the code.
+1. Download **[claude-moove.zip](https://github.com/paulgegenyi/claude-moove/releases/latest/download/claude-moove.zip)** (it's also under **Releases**, on the right of this page).
+2. Right-click it and choose **Extract All**.
+3. Double-click **`1 - PACK (on the laptop you're leaving)`** or **`2 - UNPACK (on the laptop you're moving to)`**.
 
-That's the whole move 🎉
+For downloaded scripts, Windows may say *"Windows protected your PC"*. Click **More info → Run anyway**. CMD and PowerShell never trigger that warning.
 
-<details>
-<summary>Using Command Prompt instead of PowerShell?</summary>
-
-```bat
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/paulgegenyi/claude-moove/main/moove.ps1 | iex"
-```
-</details>
-
-<p align="center">
-  <img src="docs/screen-send.svg" width="700" alt="The PACK window at step 6 of 6, Send it to the new laptop: a one-time code in pink, joy-buzz-tiger, with the one line to paste on the new laptop and the sending progress">
-</p>
-
-### Rather double-click?
-
-- **Pendrive:** the packed folder comes with its own buttons. On the new laptop, open it on the stick and double-click `2 - UNPACK (on the laptop you're moving to)`. Windows doesn't fuss, because the folder was made on your own laptop.
-- **Download:** click **Code → Download ZIP**, extract it, then double-click `1 - PACK (on the laptop you're leaving)` or `2 - UNPACK (on the laptop you're moving to)`. Windows may show *"Windows protected your PC"* for downloaded scripts; click **More info → Run anyway**. The one-line command never triggers that warning.
+> **Pendrive tip:** the packed folder comes with its own buttons. On the new laptop, open it on the stick and double-click `2 - UNPACK (on the laptop you're moving to)`. There's no warning, because the folder was made on your own laptop.
 
 ## The little window
 
@@ -152,7 +163,7 @@ It's the same way Claude Code's own Windows installer works. The line downloads 
 <details>
 <summary><b>Windows says "Windows protected your PC" when I double-click a button. Is that bad?</b></summary>
 <br>
-Windows says that about most scripts downloaded through a browser. Click <b>More info → Run anyway</b>, or use the one-line command instead. The buttons are plain text files, so you can open them and read every line first.
+Windows says that about most scripts downloaded through a browser. Click <b>More info → Run anyway</b>, or start it from CMD or PowerShell instead, which never triggers it. The buttons are plain text files, so you can open them and read every line first.
 </details>
 
 <details>
