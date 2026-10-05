@@ -778,6 +778,18 @@ function Invoke-Preview {   # draws each screen once, without doing anything, to
   Set-Step 4
   Put '   [x] Copied 42 sessions and 120 chat files.' ok
   Put '   Zipping...  640 MB so far  2:13' plain
+  Write-Host '@@SCREEN Unpacking on the new laptop (paths fixed and chats merged for you)'
+  $script:what = 'moving in on this laptop'
+  $script:steps = 'Find your packed stuff', 'Claude app installed', 'Signed in to the same account', 'Close Claude', 'Unpack and merge your chats', 'Node.js and Git', 'Your project folders'
+  Set-Step 5
+  Put '   [x] Your folders have different paths on this laptop; fixing them:' ok
+  Put '         C:\Users\Alex\Desktop  ->  C:\Users\alex.lee\OneDrive\Desktop' dim
+  Put '         C:\Users\Alex  ->  C:\Users\alex.lee' dim
+  Put '   [x] Added from your old laptop: 38 sessions.' ok
+  Put "   [x] Updated because the other laptop's copy was newer: 3 sessions." ok
+  Put '   [x] Used on BOTH laptops: 1 chat. You get both copies, nothing lost.' warn
+  $script:what = 'packing up this laptop'
+  $script:steps = 'Close Claude', 'Check your projects', 'Copy your Claude stuff', 'Zip it up', 'Make your transfer folder'
   Write-Host '@@SCREEN The end'
   Show-Big -Bloom @(
     '[x] All packed: 42 sessions, 120 chat files, 900 MB.',
