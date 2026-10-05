@@ -2,7 +2,7 @@
   <img src="docs/claude-moove.svg" width="720" alt="Pixel-art Clawd with happy eyes standing in a flower field with butterflies, sparkles and a sun, above the words CLAUDE MOOVE! in rainbow block letters">
 </p>
 
-<h3 align="center">Your Claude chats are coming with you.</h3>
+<h3 align="center">Your Claude chats are coming with you 🌼</h3>
 
 <p align="center">
   Move every chat, session, setting, hook, skill and memory to a new Windows laptop with <b>two buttons</b>.<br>
@@ -29,7 +29,7 @@
 3. **Carry.** Take that folder to the new laptop on a USB stick or a cloud drive. If it arrives as a zip, right-click it and choose **Extract All**.
 4. **Unpack.** On the new laptop, open the folder, double-click **`2 - UNPACK (on the laptop you're moving to)`** and follow along.
 
-That's the whole move. UNPACK even leaves the two buttons on your new Desktop, so next time is just as easy.
+That's the whole move 🎉 UNPACK even leaves the two buttons on your new Desktop, so next time is just as easy.
 
 ## The little window
 

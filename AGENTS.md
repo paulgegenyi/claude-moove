@@ -7,3 +7,4 @@ Start with [README.md](README.md) (what Claude Moove does) and [engine/README.md
 - Never commit packed data (`claude-data.zip`, `manifest.json`) or anything personal: no real user names, paths, session titles or account IDs in code, docs or examples.
 - Test screens with `-Mode preview`. Test packing and unpacking with `-Test`, pointing `-HomeDir`, `-AppDataDir`, `-DesktopDir` and `-DocumentsDir` at a throwaway folder. Never unpack into a real profile while testing.
 - When behaviour changes, update `engine/README.md` in the same change.
+- This is a public repo: commit messages plainly describe the change ("Add screenshots to the README"), with no chat wording, nicknames or jokes.
