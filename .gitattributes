@@ -1,0 +1,2 @@
+# The buttons are Windows batch files: keep their CRLF line endings byte for byte.
+*.cmd -text

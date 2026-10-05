@@ -1,0 +1,3 @@
+# Packed data is someone's full chat history: never commit it.
+claude-data.zip
+manifest.json
