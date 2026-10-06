@@ -484,7 +484,7 @@ function Get-ProjectClaudeFiles([string]$root, [bool]$isGit) {   # project Claud
   foreach ($d in Get-ChildItem -LiteralPath (Join-Path $root '.claude') -Force -ErrorAction SilentlyContinue) {
     if ($d.PSIsContainer -and $d.Name -eq 'worktrees') { continue }   # agent worktrees are whole copies of the project
     $files = if ($d.PSIsContainer) { Get-ChildItem -LiteralPath $d.FullName -Recurse -File -Force -ErrorAction SilentlyContinue } else { $d }
-    foreach ($f in $files) { if ($f.Length -lt 5MB) { $cands += $f.FullName.Substring($root.Length + 1) } }
+    foreach ($f in $files) { if ($f.Length -lt 5MB -and $f.Extension -ne '.lock') { $cands += $f.FullName.Substring($root.Length + 1) } }   # lock files only matter while Claude runs
   }
   if (-not $isGit -or -not $cands.Count) { return $cands }
   $spec = @($rootFiles) + '.claude' + ':(exclude).claude/worktrees'
@@ -494,16 +494,48 @@ function Get-ProjectClaudeFiles([string]$root, [bool]$isGit) {   # project Claud
   }
   @($cands | Where-Object { $notOnGit.ContainsKey($_) })
 }
-function Get-Projects {   # the project folders this laptop's sessions use: GitHub link, unsaved work, Claude files GitHub lacks
-  $metas = @(Get-ChildItem -LiteralPath "$claudeDir\claude-code-sessions" -Recurse -File -Filter 'local_*.json' -ErrorAction SilentlyContinue)
-  $cwds = $metas | ForEach-Object { (Read-Json $_.FullName).cwd } | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Sort-Object -Unique
+function Get-TranscriptFolder([string]$file) {   # the folder a chat ran in, from the first lines of its transcript
+  $sr = $null
+  try {
+    $sr = New-Object IO.StreamReader($file)
+    for ($i = 0; $i -lt 50; $i++) {
+      $l = $sr.ReadLine(); if ($null -eq $l) { break }
+      if ($l.Contains('"cwd"')) { $c = ($l | ConvertFrom-Json).cwd; if ($c) { return $c } }
+    }
+  } catch {} finally { if ($sr) { $sr.Dispose() } }
+  $null
+}
+function Get-ChatFolders {   # every folder a chat ran in: Code tab sessions, and terminal chats from their transcripts
+  $set = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  foreach ($f in Get-ChildItem -LiteralPath "$claudeDir\claude-code-sessions" -Recurse -File -Filter 'local_*.json' -ErrorAction SilentlyContinue) {
+    try { $c = (Read-Json $f.FullName).cwd; if ($c) { [void]$set.Add($c.TrimEnd('\')) } } catch {}
+  }
+  foreach ($d in Get-ChildItem -LiteralPath "$HomeDir\.claude\projects" -Directory -ErrorAction SilentlyContinue) {
+    foreach ($t in Get-ChildItem -LiteralPath $d.FullName -File -Filter *.jsonl -ErrorAction SilentlyContinue) {
+      $c = Get-TranscriptFolder $t.FullName
+      if ($c) { [void]$set.Add($c.TrimEnd('\')); break }   # the chats in one folder all started in the same place
+    }
+  }
+  $set
+}
+function Get-Projects {   # each folder you've chatted in (or its git repo): GitHub link, unsaved work, Claude files GitHub lacks
   $hasGit = [bool](Get-Command git -ErrorAction SilentlyContinue)
+  $notProjects = @("$HomeDir\.claude", $claudeDir, "$HomeDir\AppData\Local\Temp") | ForEach-Object { $_.TrimEnd('\') + '\' }   # Claude's own and temporary folders
   $projects = [ordered]@{}
-  foreach ($cwd in $cwds) {
-    if ($cwd.TrimEnd('\') -eq $HomeDir.TrimEnd('\') -or $cwd.StartsWith($claudeDir, [StringComparison]::OrdinalIgnoreCase)) { continue }
-    $top = if ($hasGit) { Invoke-Git $cwd rev-parse --show-toplevel | Select-Object -First 1 }
-    $root = if ($top) { $top.Replace('/', '\') } else { $cwd }
-    if ($projects.Contains($root)) { continue }
+  foreach ($cwd in @(Get-ChatFolders | Sort-Object)) {
+    if (-not (Test-Path -LiteralPath $cwd -PathType Container)) { continue }
+    if (@($notProjects | Where-Object { ($cwd + '\').StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }).Count) { continue }
+    $root = $cwd; $top = $null
+    if ($hasGit) {
+      $g = @(Invoke-Git $cwd rev-parse --path-format=absolute --show-toplevel --git-dir --git-common-dir)
+      if ($g.Count -ge 3) {
+        $top = $g[0].Replace('/', '\')
+        # a worktree (the app makes them for some sessions) belongs to its main checkout
+        $top = if ($g[1] -ne $g[2]) { Split-Path $g[2].Replace('/', '\') } else { $top }
+      } else { $top = Invoke-Git $cwd rev-parse --show-toplevel | Select-Object -First 1; if ($top) { $top = $top.Replace('/', '\') } }
+      if ($top) { $root = $top }
+    }
+    if ($root.TrimEnd('\') -eq $HomeDir.TrimEnd('\') -or $projects.Contains($root)) { continue }   # your user folder is not a project
     $info = [ordered]@{ path = $root; remote = $null; unsaved = 0; claudeFiles = @(Get-ProjectClaudeFiles $root ([bool]$top)) }
     if ($top) {
       $info.remote = Invoke-Git $root remote get-url origin | Select-Object -First 1
@@ -562,7 +594,8 @@ function Show-PackMenu($items, $state, $risky) {
   Put ('    U  ' + $(if ($state.how -eq 'usb') { '(o)' } else { '( )' }) + ' carry it on a pendrive or USB stick') $(if ($state.how -eq 'usb') { 'plain' } else { 'dim' })
   if (@($risky).Count) {
     Gap
-    Put ('   Heads up, not on GitHub yet: ' + ((@($risky) | ForEach-Object { (Split-Path $_.path -Leaf) + ' (' + (Plural $_.unsaved 'change') + ')' }) -join ', ')) warn
+    $names = @($risky | ForEach-Object { (Split-Path $_.path -Leaf) + ' (' + (Plural $_.unsaved 'change') + ')' })
+    Put ('   Heads up, not on GitHub yet: ' + $(if ($names.Count -gt 4) { ($names[0..3] -join ', ') + ", and $($names.Count - 4) more" } else { $names -join ', ' })) warn
     Put '   Commit and push them first, or copy those folders yourself.' dim
   }
   if ($state.msg) { Gap; Put "   $($state.msg)" warn; $state.msg = '' }
@@ -1228,15 +1261,27 @@ function Invoke-MoveIn($P) {
     if (Get-Command node -ErrorAction SilentlyContinue) { & node $hook --install (Join-Path $HomeDir '.claude\settings.json') }
     else { $warnings.Add("Claude's one-time notes about what changed on both laptops need Node.js. Everything is still there; install Node.js and move in again to switch them on.") }
   }
+  $toCopy = @(); $filesWait = 0
   foreach ($m in $P.missing) {
     $nf = if ($want.projects) { @($P.files | Where-Object { $_.project -eq $m }).Count } else { 0 }
     $then = if ($nf) { ", then move in again for its $(Plural $nf 'Claude file')" } else { '' }
     if (-not (Test-Path -LiteralPath $m.path)) {
-      if (-not $m.remote) { $warnings.Add("Copy the folder '$($m.name)' from your old laptop to exactly: $($m.path)$then.") }
+      if (-not $m.remote) { $toCopy += $m; $filesWait += $nf }
       elseif ($want.download -and -not $Test) { $warnings.Add("Couldn't download '$($m.name)'. Copy it from your old laptop to exactly: $($m.path)$then.") }
       elseif ($nf) { $warnings.Add("'$($m.name)' isn't on this laptop yet, so its $(Plural $nf 'Claude file') didn't come in. Get the project, then move in again.") }
     }
     elseif ($m.unsaved -gt 0) { $warnings.Add("'$($m.name)' came from GitHub, but its $(Plural $m.unsaved 'unsaved change') from the old laptop aren't in it. Copy them over if you need them.") }
+  }
+  if ($toCopy.Count -le 3) {   # folders that aren't on GitHub: name each, or sum up a long list
+    foreach ($m in $toCopy) {
+      $nf = if ($want.projects) { @($P.files | Where-Object { $_.project -eq $m }).Count } else { 0 }
+      $warnings.Add("Copy the folder '$($m.name)' from your old laptop to exactly: $($m.path)$(if ($nf) { ", then move in again for its $(Plural $nf 'Claude file')" }).")
+    }
+  } else {
+    $names = @($toCopy | ForEach-Object { $_.name })
+    $shown = if ($names.Count -gt 6) { ($names[0..4] -join ', ') + ", and $($names.Count - 5) more" } else { $names -join ', ' }
+    $warnings.Add("$($toCopy.Count) project folders aren't on this laptop or GitHub: $shown. " +
+      "Copy the ones you need from your old laptop to the same place, for example $($toCopy[0].path)$(if ($filesWait) { ", then move in again for their Claude files" }).")
   }
   $settled = Read-Marker; foreach ($k in $script:settled.Keys) { $settled[$k] = $script:settled[$k] }
   Update-Marker @{ lastUnpack = (Get-Date).ToString('o'); from = $script:fromPc; resolved = $settled; freshInstall = ($script:firstMoove -and $waiting.Count -gt 0) }

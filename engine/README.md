@@ -40,13 +40,15 @@ Never packed: caches, telemetry, live-process files (`sessions`, `session-env`, 
 
 ## Project Claude files
 
-PACK looks at the project folders the Code tab sessions use (each session's folder, or the root of its git repo) for:
+**What counts as a project:** every folder a chat ran in. That's each Code tab session's folder (from `claude-code-sessions`) plus each terminal chat's, read from the `cwd` in the first lines of one transcript per `~/.claude/projects` folder. Inside a git repo, the project is the repo's top folder. A linked worktree (`--git-dir` differs from `--git-common-dir`) counts as its main checkout, so the app's `.claude/worktrees/*` sessions don't become projects of their own. Left out: the user folder itself, `~/.claude`, `%APPDATA%\Claude` (scratch workspaces) and `AppData\Local\Temp`. Folders that no longer exist are skipped.
+
+In each project PACK looks for:
 - `CLAUDE.md`, `CLAUDE.local.md` and `AGENTS.md` at the project root
-- everything under `.claude/`, except `.claude/worktrees` (whole copies of the project) and files of 5 MB or more
+- everything under `.claude/`, except `.claude/worktrees` (whole copies of the project), `*.lock` files and files of 5 MB or more
 
 In a git repo only files GitHub doesn't have are packed: untracked, ignored, or changed since the last commit. In other folders all of them are. They go into the zip under `projects/<n>/`, and `manifest.json` lists them per project (`claudeFiles`, `slot`).
 
-UNPACK puts them into the project's folder on this laptop, with paths rewritten (see [Paths that don't match](#paths-that-dont-match)). If the folder isn't here, they wait: it says so, and a later move-in, after the project is downloaded or copied, brings them.
+UNPACK puts them into the project's folder on this laptop, with paths rewritten (see [Paths that don't match](#paths-that-dont-match)). If the folder isn't here, they wait: it says so, and a later move-in, after the project is downloaded or copied, brings them. Project folders that aren't here and aren't on GitHub are named one by one when there are up to three; a longer list is summed up in one line, with the first path as an example.
 
 ## How unpack merges
 
@@ -129,6 +131,7 @@ The pack screen offers sending (S) or carrying (U). UNPACK receives when it can'
   - sending: pack a tiny fake profile with `-Transfer send`, then unpack from a fresh copy of the tool (no data) with `-ReceiveCode` into another fake profile
   - a lived-in destination: its own chat, settings and sidebar layout must survive
   - project Claude files: committed-then-changed, ignored and untracked files in a git repo, a non-git folder, a `.claude/worktrees` copy that must stay behind, and a project missing on the new laptop
+  - which folders are projects: a terminal-only chat (transcript but no Code tab session), a session inside a git worktree (its repo is the project), chats in a temp folder and in the user folder (not projects), and four missing folders (summed up in one warning)
   - files changed on both laptops: `-Plan`, then `-Choices` with a merged file, `mine` and `both`, then a second `-Plan` that asks nothing
   - Claude open: the pick screen with C typed at the wait, and `-Yes` followed by a `-WhenClosed` run
   - the launcher from a clone (`moove.ps1 -Mode unpack -Test ...`), with a packed folder on the fake Desktop that unpack must find by itself; `-Mode menu -Test` must change nothing, and typing 3 must install the skill into the fake profile
