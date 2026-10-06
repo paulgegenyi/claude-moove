@@ -1,7 +1,7 @@
 {
   "name": "moove",
   "displayName": "Claude Moove",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Move your Claude chats, sessions, CLAUDE.md, settings, hooks, skills, plugins and memory to another Windows laptop, and let Claude merge whatever changed on both.",
   "author": { "name": "paulgegenyi", "url": "https://github.com/paulgegenyi" },
   "homepage": "https://github.com/paulgegenyi/claude-moove",

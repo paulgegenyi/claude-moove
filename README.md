@@ -78,19 +78,23 @@ On the laptop you're leaving, choose **1** in the menu, or double-click `1 - PAC
 
 **What comes along.** Everything is ticked. Type a number and press Enter to tick or untick it.
 
-| | What | What's in it |
-|---|---|---|
-| 1 | Chats and sessions | Every chat and session from the desktop app's Code tab and from Claude Code in the terminal, with titles, stars and archive state. Also edit history for rewinds, your prompt history and Cowork sessions |
-| 2 | Settings and instructions | Your global `CLAUDE.md`, `~/AGENTS.md`, `settings.json`, hooks, skills, plugins, commands and agents, your MCP servers, and the desktop app's settings |
-| 3 | Memory | The notes Claude keeps for each project |
-| 4 | Project Claude files | The Claude files in your projects that GitHub doesn't have, like a `CLAUDE.md` you never committed. See [Your projects](#your-projects) |
-| 5 | Sidebar layout | How your sessions are grouped and pinned in the app. This one needs Claude closed |
+| What | What's in it |
+|---|---|
+| Chats and sessions | Every chat and session from the desktop app's Code tab and from Claude Code in the terminal, with titles, stars and archive state. Also edit history for rewinds, your prompt history and Cowork sessions |
+| Memory | The notes Claude keeps for each project |
+| Instructions | Your global `CLAUDE.md`, `~/AGENTS.md` and rules |
+| Settings | `settings.json`, your MCP servers, the desktop app's settings, scheduled tasks |
+| Hooks | Your hook scripts, and the hooks in `settings.json`. Untick it and your hooks stay behind completely |
+| Skills, commands, agents | Your skills, slash commands, agents and output styles |
+| Plugins | Your plugins and their marketplaces, and which ones are switched on |
+| Sidebar layout | How your sessions are grouped and pinned in the app. This one needs Claude closed |
+| Projects | The projects you worked on with Claude. Type its number to pick them one by one (see [Your projects](#your-projects)) |
+
+Only what you actually have shows up: no hooks, no Hooks line.
 
 **How it travels.** Press **S** to send it over the internet with a one-time code, or **U** to carry it on a pendrive. See [Sending or carrying](#sending-or-carrying).
 
 **Claude can stay open.** Only the sidebar layout needs Claude closed. Press **C** and Claude Moove closes it for you. Your chats are saved as you go, so nothing is lost.
-
-**Heads-up for your projects.** If a project has work that isn't on GitHub yet, the screen tells you, so you can commit and push it first. Claude Moove carries your Claude files, not your code.
 
 Press **Enter** to start, or **Q** to quit without changing anything. A few minutes later there's a `Claude Moove <date>` folder on your Desktop, with your data and both buttons inside. If you chose sending, the code comes next.
 
@@ -110,7 +114,7 @@ On the laptop you're moving to, choose **2** in the menu, or double-click `2 - U
 
 A new Windows user name, or a Desktop that OneDrive moved, is no problem. Every path gets rewritten, so your sessions open and your hooks keep working.
 
-**What comes in.** The same five kinds as when packing, plus **Download missing projects**: project folders that are on GitHub but not on this laptop get downloaded to the same place as on your old laptop. A PC with its own sidebar layout keeps it unless you tick it.
+**What comes in.** The same kinds as when packing. Type the Projects number to see what happens to each project: downloaded from GitHub with the local files on top, copied whole, or (for one that's already here) its files added. A PC with its own sidebar layout keeps it unless you tick it.
 
 **Changed on both laptops.** When your `CLAUDE.md`, `AGENTS.md`, `settings.json` or a project's Claude file changed on both laptops, nothing gets overwritten blindly. Like git, it lists them and you pick what to keep. Type a file's number to switch between the choices:
 
@@ -127,6 +131,8 @@ It suggests one for each file:
 
 Once you've settled a file, it doesn't ask about the same versions again.
 
+If a project is already on this laptop and other files in it differ (your code, a `.env`), they get one line per project, like `recipe-app: 3 other files`: keep this PC's copies (the starting choice) or take the old laptop's. Unless this PC's copies are just what's on GitHub, then the old laptop's are suggested.
+
 **Other keys:**
 - **C** closes Claude
 - **N** and **G** install Node.js and Git
@@ -134,7 +140,7 @@ Once you've settled a file, it doesn't ask about the same versions again.
 - **A** checks the account again
 - **R** receives with a code instead
 
-**With Claude still open,** your settings, memory and project files come in right away. Then the window says *Close Claude now*, and the moment you do, your chats and sidebar layout come in. Press **C** to let Claude Moove close it, or **S** to skip for now. Moving in again later only adds what's missing.
+**With Claude still open,** your projects, settings and memory come in right away. Then the window says *Close Claude now*, and the moment you do, your chats and sidebar layout come in. Press **C** to let Claude Moove close it, or **S** to skip for now. Moving in again later only adds what's missing.
 
 At the end you see what came in. Anything replaced is saved in `~/.claude-moove-safety` first.
 
@@ -142,15 +148,23 @@ At the end you see what came in. Anything replaced is saved in `~/.claude-moove-
 
 **What counts as a project?** Every folder you've had a Claude chat in, from the Code tab or from the terminal. If that folder is inside a git repository, the whole repository is the project, and a worktree counts as part of its repository. Your user folder, Claude's own folders and temporary folders don't count.
 
-**Which files come along?** From each project:
-- `CLAUDE.md` and `AGENTS.md` at the top, and `CLAUDE.local.md` if you keep one
-- everything in its `.claude` folder: project settings, rules, commands, agents and skills, but not worktrees or lock files
+**Pick them one by one.** On the packing screen, type the Projects number to get the list, then type a project's number to switch what happens to it:
 
-**Only what GitHub doesn't have.** In a git repository, a file comes along only if GitHub doesn't have it as it is: never committed, git-ignored, or changed since your last commit. So if you keep your `CLAUDE.md` out of git, it still travels with you. If it's committed, it comes back with the project. In a folder without git, they all come along.
+<p align="center">
+  <img src="docs/screen-projects.svg" width="700" alt="The projects screen: each project with what comes along, like GitHub plus local files (2.1 MB: data, .env, .env.local, and 2 commits not on GitHub), GitHub only for a project with over 300 MB of local files, a whole folder, Claude files only for the Desktop, and one left behind">
+</p>
 
-**On the new laptop** they go into the same project folder, with paths fixed. If the project isn't there yet, Claude Moove offers to download it from GitHub first. If it isn't on GitHub, Claude Moove tells you which folders to copy over. Their Claude files wait until then: move in again once the folder is there.
+| For | You can choose |
+|---|---|
+| A project on GitHub | **GitHub + local files**: the new laptop downloads it from GitHub, and everything GitHub doesn't have goes on top. **GitHub only**: just the download. Or **left behind** |
+| A folder that isn't on GitHub | **Whole folder**, **Claude files only** (its `CLAUDE.md`, `AGENTS.md` and `.claude` folder), or **left behind** |
+| Your Desktop, Documents or Downloads | **Claude files only**, or **left behind**. Chats started there count, but those folders never travel themselves |
 
-Your code itself doesn't travel. Push it to GitHub, or copy the folder.
+**Local files** are everything GitHub doesn't have: git-ignored files like your `.env`, files you never committed, and changes you haven't committed yet. Say you push a project on one laptop, but your `.env` is git-ignored. On the new laptop the project comes down from GitHub, your `.env` lands in it, and you carry on where you left off. Commits you haven't pushed come along too, and the new laptop checks out the branch you were on. The same goes for a `CLAUDE.md` you keep out of git.
+
+**Some things never travel.** Rebuildable folders like `node_modules`, `.venv` and build output come back when you install and build. A project with more than 300 MB of local files starts as "GitHub only", so a huge data folder doesn't sneak into your move. Switch it if you do want it.
+
+**On the new laptop** each project lands where it was on your old laptop, in your new user folder. If the project is already there, nothing in it gets overwritten blindly (see [Moving in](#moving-in)). Commits from your old laptop show up as `old-laptop/...` branches you can merge.
 
 ## Let Claude do it
 
@@ -174,7 +188,7 @@ Type `/claude-moove`, or just ask:
 - *"Send my Claude stuff to my other PC."*
 - *"Move my Claude stuff in from the USB stick."*
 
-**When you pack up,** Claude asks whether you'll send or carry it, packs, and gives you the folder or the code. If a project has work that isn't on GitHub yet, it offers to commit and push it.
+**When you pack up,** Claude shows you what can come along and your projects with their sizes, asks which ones you want and whether you'll send or carry it, packs, and gives you the folder or the code.
 
 **When you move in,** Claude:
 1. Looks first, changing nothing, and tells you what will come in: your chats, settings and projects, and any path changes.
@@ -199,8 +213,8 @@ Type `/claude-moove`, or just ask:
 |---|---|
 | Every chat and session, from the desktop app's Code tab and from Claude Code, with titles, stars and archive state | Your login: you just sign in again |
 | Your global `CLAUDE.md`, `~/AGENTS.md` if you keep one, `settings.json`, hooks, skills, plugins and MCP servers | Caches, logs and other temporary files |
-| Claude's memory, edit history for rewinds, Cowork sessions and your sidebar layout | Your project folders themselves. They come back from GitHub, or you copy them over |
-| The Claude files in your projects that GitHub doesn't have, like an uncommitted `CLAUDE.md` | Claude files GitHub already has: they come back with the project |
+| Claude's memory, edit history for rewinds, Cowork sessions and your sidebar layout | Projects you leave out on the projects screen |
+| Your projects: downloaded again from GitHub with what GitHub doesn't have on top (`.env` files, uncommitted work, unpushed commits), or copied whole | Rebuildable folders like `node_modules`: they come back when you install |
 
 Your claude.ai chats already live online and show up as soon as you sign in.
 
@@ -213,6 +227,7 @@ Nothing gets lost, even if you kept working on both laptops.
 | A chat is newer on one laptop | The newer copy wins |
 | The same chat was continued on both | You keep both. The other one appears as "… (other laptop)", and the first time you open either, Claude gets a one-time note about what happened in the other |
 | `CLAUDE.md`, `AGENTS.md`, `settings.json` or a project's Claude files changed on both | You choose: keep this PC's, take the old laptop's, or keep both, and Claude offers to merge them next time you start it. With the skill, Claude merges them right away |
+| Other files changed in a project that's on both laptops (code, `.env`) | One choice per project: keep this PC's copies or take the old laptop's |
 | Other settings changed | The newer file wins |
 | The new PC already has its own Claude chats | Nothing there is wiped: your chats are merged in next to its own, and it keeps its own sidebar layout unless you tick it |
 
@@ -230,7 +245,7 @@ Anything replaced is saved in `~/.claude-moove-safety` first. The exact rules ar
 <details>
 <summary><b>Does anything get uploaded?</b></summary>
 <br>
-Only if you choose to send it over the internet, and then it's encrypted end to end (see the next question). If you carry it, your data only goes wherever you take the folder. Either way, treat that folder like a diary: it holds your full chat history.
+Only if you choose to send it over the internet, and then it's encrypted end to end (see the next question). If you carry it, your data only goes wherever you take the folder. Either way, treat that folder like a diary and a key ring: it holds your full chat history and your projects' local files, `.env` secrets included. Delete it once the new laptop is set up.
 </details>
 
 <details>

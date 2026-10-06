@@ -12,7 +12,8 @@ param(
   [string]$OutDir = '',   # where pack puts the transfer folder (default: the Desktop)
   [ValidateSet('ask', 'send', 'usb')][string]$Transfer = 'ask',   # pack: how the folder gets to the new laptop
   [string]$ReceiveCode = '',   # unpack: the croc code, instead of asking for it
-  [string[]]$What = @(),  # what comes along: chats, settings, memory, projects, sidebar, download (default: all that apply)
+  [string[]]$What = @(),  # what comes along: chats, memory, instructions, settings, hooks, skills, plugins, sidebar, projects (default: all that apply)
+  [string]$Projects = '', # per project, "name=mode,...": all, github, claude or none (* for every project)
   [string]$From = '',     # unpack: the transfer folder to use, instead of looking for one
   [string]$Choices = '',  # unpack: JSON file, a choice per file changed on both laptops: mine, theirs, both, or a merged file's path
   [switch]$Plan,          # unpack: only report what would happen (JSON), with copies of the other laptop's versions; changes nothing
@@ -248,10 +249,12 @@ function End-Wait { Gap; Put '   Press any key to close this window.' dim; if ($
 
 # Runs a tool in the background while Clawd walks and a timer ticks, so a long step never looks frozen.
 function Start-Tool([string]$exe, [string]$argLine) {
-  $p = Start-Process -FilePath $exe -ArgumentList $argLine -NoNewWindow -PassThru `
-    -RedirectStandardOutput (Join-Path $env:TEMP 'claude-moove-tool.log') -RedirectStandardError (Join-Path $env:TEMP 'claude-moove-tool.err')
-  $null = $p.Handle   # keeps the exit code readable after the process ends
-  $p
+  # Started through cmd, which sends its output to a log, so the process is ours from the start and its exit code is always
+  # there (Start-Process can lose it when a tool finishes in an instant).
+  $log = Join-Path $env:TEMP 'claude-moove-tool.log'
+  $psi = New-Object System.Diagnostics.ProcessStartInfo 'cmd.exe', ('/d /s /c "' + $exe + ' ' + $argLine + ' > "' + $log + '" 2>&1"')
+  $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+  [System.Diagnostics.Process]::Start($psi)
 }
 function Show-Walk([int]$frame, [string]$text, [datetime]$t0) {   # one frame of Clawd walking, with the status and a timer
   if ($Test -or $quiet) { return }
@@ -302,7 +305,7 @@ function New-WorkDir {   # short path, so deep chat folders stay under Windows' 
 function Read-Json([string]$path) { [IO.File]::ReadAllText($path) | ConvertFrom-Json }
 function Invoke-Git([string]$dir) {
   $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-  try { $o = & git -C $dir @args 2>$null; if ($LASTEXITCODE -eq 0) { $o } } finally { $ErrorActionPreference = $old }
+  try { $o = & git -C $dir -c core.quotepath=off @args 2>$null; if ($LASTEXITCODE -eq 0) { $o } } finally { $ErrorActionPreference = $old }   # file names as they are, not escaped
 }
 function Update-Path { $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User') }
 # Test runs never touch the real Claude: a file in the fake profile stands for "Claude is open", and closing deletes it.
@@ -381,6 +384,7 @@ function Send-Folder([string]$folder) {   # returns $true once the new laptop ha
   Put '   then choose  2  (move in) and type the code above when it asks.' plain
   Put '   Keep this window open until it says done.' dim
   Put '   The code works once: only type it on your own laptop.' dim
+  Put "   If the new laptop can't connect, close this and carry the folder instead (it's on your Desktop)." dim
   if ($Test -or $Json) { Write-Host "MOOVE-CODE:$code" }   # for the Claude skill and unattended tests
   Gap
   Wait-Walking $p { $pc = Get-Percent (Read-Log $log); if ($pc) { "Sending...  $pc" } else { 'Waiting for the new laptop to type the code...' } }
@@ -430,7 +434,10 @@ function Receive-Folder {   # asks for the old laptop's code and receives its fo
       $found = Get-ChildItem -LiteralPath $inbox -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'engine\manifest.json') } | Select-Object -First 1
       if ($p.ExitCode -eq 0 -and $found) { Put '   [x] Received from your old laptop.' ok; $script:received = $found.FullName; return $found.FullName }
     }   # a failed first try gets a second one with Windows' DNS lookup, for networks that block outside DNS
-    if ($text -match 'rate limit') { Put "   croc's relay asked us to slow down. Wait a minute, then try the code again." warn }
+    if ($text -match 'rate limit|admission') {   # croc's free relay allows 5 transfers an hour per internet connection
+      Put "   croc's free relay is busy for this internet connection: it allows 5 transfers an hour." warn
+      Put '   Wait a while and pack again for a fresh code, use your phone''s hotspot, or carry the folder on a USB stick.' warn
+    }
     else { Put "   That didn't work. Check the code on your old laptop (its window must still be open) and try again." warn }
     Put ('   croc said: ' + (Get-LastLine $text)) dim
     if ($ReceiveCode) { break }
@@ -439,12 +446,20 @@ function Receive-Folder {   # asks for the old laptop's code and receives its fo
 }
 
 # ---------------------------------------------------------------- what can come along
-$labels = [ordered]@{ chats = 'Chats and sessions'; settings = 'Settings and instructions'; memory = 'Memory'; projects = 'Project Claude files'; sidebar = 'Sidebar layout'; download = 'Download missing projects' }
+$labels = [ordered]@{ chats = 'Chats and sessions'; memory = 'Memory'; instructions = 'Instructions'; settings = 'Settings'; hooks = 'Hooks'
+  skills = 'Skills, commands, agents'; plugins = 'Plugins'; sidebar = 'Sidebar layout'; projects = 'Projects' }
 $skipDirs  = 'cache', 'shell-snapshots', 'session-env', 'sessions', 'telemetry', 'daemon', 'downloads'
 $skipFiles = '.credentials.json', 'daemon.lock', 'daemon.log', 'daemon.status.json', '.last-cleanup', '.last-update-result.json'
 $chatDirs  = 'projects', 'file-history', 'todos', 'plans', 'uploads'   # in ~/.claude; projects also holds memory
 $appChats  = 'claude-code-sessions', 'local-agent-mode-sessions', 'scratch-workspaces'
-$rootFiles = 'CLAUDE.md', 'CLAUDE.local.md', 'AGENTS.md'   # project files that get "keep both, Claude merges" by default
+$partDirs  = [ordered]@{ instructions = @('rules'); hooks = @('hooks'); skills = @('skills', 'commands', 'agents', 'output-styles'); plugins = @('plugins') }   # their folders in ~/.claude
+$partKeys  = [ordered]@{ hooks = @('hooks'); plugins = @('enabledPlugins', 'extraKnownMarketplaces') }   # and their switches in settings.json
+$rootFiles = 'CLAUDE.md', 'CLAUDE.local.md', 'AGENTS.md'
+# Folders that installing or building brings back, so they never travel. In git repos, ignored build output too.
+$rebuildable = 'node_modules', '.venv', 'venv', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.next', '.nuxt', '.svelte-kit',
+  '.turbo', '.parcel-cache', '.cache', '.gradle', '.terraform', '.vs', '.angular', '.expo', '.dart_tool', 'Pods', 'DerivedData'
+$generated = 'dist', 'build', 'target', 'coverage', 'out'
+$bigProject = 300MB   # a project with more local files than this starts as "GitHub only" or "Claude files only"
 
 function Show-Top([string]$subtitle) {   # small Clawd header for the pick screens
   if ($quiet) { return }
@@ -455,7 +470,7 @@ function Show-Top([string]$subtitle) {   # small Clawd header for the pick scree
   Put (' ' + $c[2] + '  ') clawd -n; Write-Host (Get-FlowerBar 4 4)
   Gap
 }
-function Get-Lower([string]$key) { $l = $labels[$key]; $l.Substring(0, 1).ToLower() + $l.Substring(1) }   # "project Claude files"
+function Get-Lower([string]$key) { $l = $labels[$key]; $l.Substring(0, 1).ToLower() + $l.Substring(1) }   # "skills, commands, agents"
 function Write-Item([int]$n, $it, [string]$lock) {
   $on = $it.on -and -not $lock
   $line = '   {0,2}  {1} {2,-27} {3}' -f $n, $(if ($on) { '[x]' } else { '[ ]' }), $labels[$it.key], $(if ($lock) { $lock } else { $it.detail })
@@ -463,13 +478,18 @@ function Write-Item([int]$n, $it, [string]$lock) {
 }
 function Read-Choice { Gap; Put '   > ' title -n; Read-Line }
 function Write-Result($obj) { if ($Json) { Write-Host ('MOOVE-JSON:' + ($obj | ConvertTo-Json -Compress -Depth 8)) } }
+function Format-Size([long]$b) {
+  $ic = [Globalization.CultureInfo]::InvariantCulture
+  if ($b -ge 1GB) { [string]::Format($ic, '{0:0.0} GB', $b / 1GB) } elseif ($b -ge 1MB) { [string]::Format($ic, '{0:0.0} MB', $b / 1MB) }
+  elseif ($b -ge 1KB) { [string]::Format($ic, '{0:0} KB', $b / 1KB) } else { "$b bytes" }
+}
 function Install-Tool([string]$which) {   # Node.js or Git, with Windows' own app installer when it's there
   $t = if ($which -eq 'node') { @{ name = 'Node.js'; cmd = 'node'; id = 'OpenJS.NodeJS.LTS'; url = 'https://nodejs.org/en/download' } } else { @{ name = 'Git'; cmd = 'git'; id = 'Git.Git'; url = 'https://git-scm.com/download/win' } }
   if ($Test) { return }
   if (Get-Command winget -ErrorAction SilentlyContinue) {
     Put "   Installing $($t.name) (this accepts its licence)..." plain
     $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    & winget install --id $t.id -e --silent --accept-package-agreements --accept-source-agreements
+    & winget install --id $t.id -e --silent --accept-package-agreements --accept-source-agreements | Out-Host
     $ErrorActionPreference = $old
   } else {
     Start-Process $t.url
@@ -478,6 +498,7 @@ function Install-Tool([string]$which) {   # Node.js or Git, with Windows' own ap
   Update-Path
 }
 
+# ---------------------------------------------------------------- your projects
 function Get-ProjectClaudeFiles([string]$root, [bool]$isGit) {   # project Claude files GitHub doesn't have (all of them outside git)
   $root = $root.TrimEnd('\')
   $cands = @(foreach ($n in $rootFiles) { if (Test-Path -LiteralPath (Join-Path $root $n) -PathType Leaf) { $n } })
@@ -493,6 +514,50 @@ function Get-ProjectClaudeFiles([string]$root, [bool]$isGit) {   # project Claud
     if ($l) { $notOnGit[$l.Replace('/', '\')] = $true }
   }
   @($cands | Where-Object { $notOnGit.ContainsKey($_) })
+}
+function Test-Skipped([string]$rel, [string[]]$skip) {   # rebuildable folders, transfer folders, agent worktrees and Claude's lock files
+  foreach ($part in $rel.Split('\')) { if ($skip -contains $part -or $part -like 'Claude Moove*') { return $true } }
+  ($rel -like '.claude\worktrees*') -or ($rel -like '.claude\*.lock')
+}
+function Measure-Files([string]$root, [string[]]$rels, [string[]]$skip, [string[]]$except, [long]$budget) {
+  # how many files and bytes are in these folders below root (rebuildable ones left out); stops counting once past the budget
+  $n = 0; $bytes = [long]0
+  $todo = New-Object System.Collections.Generic.Stack[string]
+  foreach ($r in $rels) { $todo.Push($r) }
+  while ($todo.Count -and $bytes -le $budget) {
+    $r = $todo.Pop(); $entries = @()
+    try { $entries = ([IO.DirectoryInfo]$(if ($r) { Join-Path $root $r } else { $root })).GetFileSystemInfos() } catch { continue }   # too deep or not allowed: not counted
+    foreach ($e in $entries) {
+      if ($skip -contains $e.Name -or $e.Name -like 'Claude Moove*') { continue }
+      $er = if ($r) { "$r\$($e.Name)" } else { $e.Name }
+      if ($er -like '.claude\worktrees*' -or $er -like '.claude\*.lock') { continue }
+      if ($e -is [IO.DirectoryInfo]) { if (-not ($e.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $except -notcontains $e.FullName) { $todo.Push($er) } }   # no links, no projects of their own
+      else { $n++; $bytes += $e.Length }
+    }
+  }
+  @{ count = $n; size = $bytes; big = ($bytes -gt $budget) }
+}
+function Get-LocalFiles([string]$root) {   # what GitHub doesn't have as it is: untracked, git-ignored and changed files
+  $skip = $rebuildable + $generated
+  $dirs = @(); $loose = @(); $deleted = @(); $looseBytes = [long]0
+  $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  foreach ($l in @(Invoke-Git $root ls-files --others --exclude-standard --directory) + @(Invoke-Git $root ls-files --others --ignored --exclude-standard --directory)) {
+    if (-not $l -or $l.StartsWith('"')) { continue }   # names git can only print quoted are rare; they stay behind
+    $rel = $l.TrimEnd('/').Replace('/', '\')
+    if ((Test-Skipped $rel $skip) -or -not $seen.Add($rel)) { continue }
+    if ($l.EndsWith('/')) { $dirs += $rel }
+    else { $fi = Get-Item -LiteralPath (Join-Path $root $rel) -Force -ErrorAction SilentlyContinue; if ($fi -and -not $fi.PSIsContainer) { $loose += $rel; $looseBytes += $fi.Length } }
+  }
+  foreach ($l in @(Invoke-Git $root ls-files --modified)) {   # changed since the last commit, or deleted
+    if (-not $l -or $l.StartsWith('"')) { continue }
+    $rel = $l.Replace('/', '\')
+    if (-not $seen.Add($rel)) { continue }
+    $fi = Get-Item -LiteralPath (Join-Path $root $rel) -Force -ErrorAction SilentlyContinue
+    if ($fi) { $loose += $rel; $looseBytes += $fi.Length } else { $deleted += $rel }
+  }
+  $m = Measure-Files $root $dirs $skip @() ($bigProject - $looseBytes)
+  @{ dirs = $dirs; loose = $loose; deleted = $deleted; count = $m.count + $loose.Count; size = $m.size + $looseBytes; big = $m.big -or ($looseBytes -gt $bigProject)
+    sample = (Get-Sample (@($dirs | ForEach-Object { "$_\" }) + $loose)) }
 }
 function Get-TranscriptFolder([string]$file) {   # the folder a chat ran in, from the first lines of its transcript
   $sr = $null
@@ -518,10 +583,11 @@ function Get-ChatFolders {   # every folder a chat ran in: Code tab sessions, an
   }
   $set
 }
-function Get-Projects {   # each folder you've chatted in (or its git repo): GitHub link, unsaved work, Claude files GitHub lacks
+function Get-Projects {   # each folder you've chatted in (or its git repo), with what could come along from it
   $hasGit = [bool](Get-Command git -ErrorAction SilentlyContinue)
   $notProjects = @("$HomeDir\.claude", $claudeDir, "$HomeDir\AppData\Local\Temp") | ForEach-Object { $_.TrimEnd('\') + '\' }   # Claude's own and temporary folders
-  $projects = [ordered]@{}
+  $special = @($DesktopDir, $DocumentsDir, "$HomeDir\Desktop", "$HomeDir\Documents", "$HomeDir\Downloads") | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') }
+  $found = [ordered]@{}
   foreach ($cwd in @(Get-ChatFolders | Sort-Object)) {
     if (-not (Test-Path -LiteralPath $cwd -PathType Container)) { continue }
     if (@($notProjects | Where-Object { ($cwd + '\').StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }).Count) { continue }
@@ -535,24 +601,183 @@ function Get-Projects {   # each folder you've chatted in (or its git repo): Git
       } else { $top = Invoke-Git $cwd rev-parse --show-toplevel | Select-Object -First 1; if ($top) { $top = $top.Replace('/', '\') } }
       if ($top) { $root = $top }
     }
-    if ($root.TrimEnd('\') -eq $HomeDir.TrimEnd('\') -or $projects.Contains($root)) { continue }   # your user folder is not a project
-    $info = [ordered]@{ path = $root; remote = $null; unsaved = 0; claudeFiles = @(Get-ProjectClaudeFiles $root ([bool]$top)) }
-    if ($top) {
-      $info.remote = Invoke-Git $root remote get-url origin | Select-Object -First 1
-      $info.unsaved = @(Invoke-Git $root status --porcelain).Count + @(Invoke-Git $root log --branches --not --remotes --oneline).Count
-    }
-    $projects[$root] = $info
+    if ($root.TrimEnd('\') -eq $HomeDir.TrimEnd('\') -or $found.Contains($root)) { continue }   # your user folder is not a project
+    $found[$root] = [bool]$top
   }
-  $projects
+  $roots = @($found.Keys)
+  $list = foreach ($root in $roots) {
+    if (-not $quiet -and -not $Test) { Write-Host -NoNewline ("`r   Looking at your projects: $(Split-Path $root -Leaf)..." + (' ' * 30)) }
+    $p = [ordered]@{ name = (Split-Path $root -Leaf); path = $root; kind = 'local'; remote = $null; branch = $null; head = $null; ahead = 0
+      mode = 'none'; modes = @(); dirs = @(); loose = @(); deleted = @(); count = 0; size = [long]0; big = $false; sample = ''; claude = @(); slot = 0; bundle = $false }
+    $isGit = $found[$root]
+    if (($special -contains $root) -or ([IO.Path]::GetPathRoot($root).TrimEnd('\') -eq $root)) { $p.kind = 'special' }   # Desktop and such: only Claude files
+    elseif ($isGit) {
+      $p.remote = Invoke-Git $root remote get-url origin | Select-Object -First 1
+      if ($p.remote) { $p.kind = 'git' }
+      $p.branch = Invoke-Git $root rev-parse --abbrev-ref HEAD | Select-Object -First 1
+      $p.head = Invoke-Git $root rev-parse HEAD | Select-Object -First 1
+      $p.ahead = @(Invoke-Git $root rev-list --branches --not --remotes).Count   # commits that aren't on GitHub
+    }
+    $p.claude = @(Get-ProjectClaudeFiles $root $isGit)
+    if ($p.kind -eq 'git') {
+      $l = Get-LocalFiles $root
+      foreach ($k in 'dirs', 'loose', 'deleted', 'count', 'size', 'big', 'sample') { $p[$k] = $l[$k] }
+    } elseif ($p.kind -eq 'local') {   # the whole folder, without projects inside it
+      $m = Measure-Files $root @('') $rebuildable @($roots | Where-Object { $_ -ne $root }) $bigProject
+      $p.count = $m.count; $p.size = $m.size; $p.big = $m.big
+      $p.sample = Get-Sample @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue | Where-Object { $rebuildable -notcontains $_.Name -and $_.Name -notlike 'Claude Moove*' } |
+          ForEach-Object { if ($_.PSIsContainer) { "$($_.Name)\" } else { $_.Name } })
+    }
+    if ($p.kind -eq 'git') { $p.modes = @('all', 'github', 'none') } elseif ($p.kind -eq 'local') { $p.modes = @('all', 'claude', 'none') } else { $p.modes = @('claude', 'none') }
+    if ($p.kind -eq 'special') { if (-not $p.claude.Count) { continue }; $p.mode = 'claude' }   # nothing of Claude's there: not worth a line
+    elseif (-not $p.big) { $p.mode = 'all' }
+    elseif ($p.kind -eq 'git') { $p.mode = 'github' }
+    elseif ($p.claude.Count) { $p.mode = 'claude' }
+    $p
+  }
+  if (-not $quiet -and -not $Test) { Write-Host -NoNewline ("`r" + (' ' * 90) + "`r") }
+  @($list)
 }
-function Copy-Selected($want, [string]$work, $projects) {   # copies only the ticked kinds of data into the work folder
+function Set-ProjectModes($plist, [string]$spec) {   # -Projects "name=mode,...": all, github, claude or none; * means every project
+  foreach ($part in @($spec -split ',' | Where-Object { $_.Trim() })) {
+    $name, $mode = $part.Trim() -split '\s*=\s*', 2
+    $hit = @(if ($name -eq '*') { $plist } else { $plist | Where-Object { $_.name -eq $name -or $_.path -eq $name } })
+    if (-not $hit.Count) { $warnings.Add("-Projects: there's no project called '$name'."); continue }
+    foreach ($p in $hit) {
+      $m = if ($mode) { $mode.ToLower() } else { $p.modes[0] }
+      if ($p.modes -contains $m) { $p.mode = $m } else { $warnings.Add("-Projects: $($p.name) can be $($p.modes -join ', '), not '$mode'.") }
+    }
+  }
+}
+function Get-Sample($rels) {   # the first few names, folders first, like "data\, .env, CLAUDE.local.md"
+  $tops = @($rels | ForEach-Object { $i = $_.IndexOf('\'); if ($i -gt 0) { $_.Substring(0, $i + 1) } else { $_ } } | Select-Object -Unique)
+  $tops = @($tops | Sort-Object { -not $_.EndsWith('\') }, { $_ })
+  (($tops | Select-Object -First 2) -join ', ') + $(if ($tops.Count -gt 2) { ', ...' })   # two, so a line fits the window
+}
+function Get-ModeText($p) {   # what happens to a project, in a few words
+  switch ($p.mode) {
+    'all' { if ($p.kind -eq 'git') { 'GitHub + local files' } else { 'whole folder' } }
+    'github' { 'GitHub only' }
+    'claude' { 'Claude files only' }
+    default { 'left behind' }
+  }
+}
+function Show-ProjectsOut($plist, $state) {   # pack: which projects come along, and how
+  Show-Top 'Pick your projects. Just Enter goes back.'
+  Put '       Project              Comes along' title
+  $n = 0
+  foreach ($p in $plist) {
+    $n++; $on = $p.mode -ne 'none'
+    $amount = if ($p.big) { "over $([int]($bigProject / 1MB)) MB" } else { "$(Format-Size $p.size), $(Plural $p.count 'file')" }
+    $detail = switch ($p.mode) {
+      'all' { $(if ($p.count) { "$($amount): $($p.sample)" } elseif ($p.kind -eq 'git') { 'nothing else: GitHub has it all' } else { 'empty' }) +
+        $(if ($p.ahead) { "; $(Plural $p.ahead 'unpushed commit')" }) }
+      'github' { $(if ($p.count) { "local files stay behind ($($amount): $($p.sample))" } else { '' }) + $(if ($p.ahead) { "; $(Plural $p.ahead 'unpushed commit') come along" }) }
+      'claude' { $(if ($p.claude.Count) { $p.claude -join ', ' } else { 'none here' }) + $(if ($p.kind -eq 'local' -and $p.size) { "; the folder ($amount) stays behind" }) }
+      default { $(if ($p.kind -eq 'git') { 'not downloaded on the new laptop' } else { '' }) }
+    }
+    Put ('   {0,2}  {1,-20} ' -f $n, $p.name) $(if ($on) { 'plain' } else { 'dim' }) -n
+    Put ('{0,-21} ' -f (Get-ModeText $p)) $(if ($on) { 'pink' } else { 'dim' }) -n
+    Put $detail.TrimStart(';', ' ') dim
+  }
+  Gap
+  Put "   GitHub projects download again on the new laptop. Local files are what GitHub doesn't have:" dim
+  Put '   git-ignored files like .env, and uncommitted work. node_modules and the like stay behind.' dim
+  if ($state.msg) { Gap; Put "   $($state.msg)" warn; $state.msg = '' }
+  Gap
+  Put '   Type a number to switch. A brings everything, N nothing. Just Enter goes back.' dim
+}
+function Edit-Projects($plist, [string]$show) {   # the projects screen: a number switches a project, A all, N none, Enter goes back
+  $state = @{ msg = '' }
+  while ($interactive) {
+    & $show $plist $state
+    $a = Read-Choice
+    if ($a -eq '') { return }
+    $k = 0
+    if ([int]::TryParse($a, [ref]$k) -and $k -ge 1 -and $k -le $plist.Count) { $p = $plist[$k - 1]; $p.mode = $p.modes[([array]::IndexOf($p.modes, $p.mode) + 1) % $p.modes.Count] }
+    elseif ($a -eq 'A') { foreach ($p in $plist) { $p.mode = $p.modes[0] } }
+    elseif ($a -eq 'N') { foreach ($p in $plist) { $p.mode = 'none' } }
+    else { $state.msg = "I didn't get that one." }
+  }
+}
+function Get-ProjectsLine($plist) {   # the projects line on the main screen
+  $going = @($plist | Where-Object { $_.mode -ne 'none' })
+  if (-not $plist.Count) { return 'none found' }
+  $local = [long]0; foreach ($p in $going) { if ($p.mode -eq 'all') { $local += $p.size } }
+  "$($going.Count) of $($plist.Count)" + $(if ($local) { ", $(Format-Size $local) of local files" }) 
+}
+function Copy-FileList([string]$from, [string]$to, [string[]]$rels, [string]$label) {   # a list of files, one robocopy per folder (long paths are fine)
+  $byDir = [ordered]@{}
+  foreach ($r in $rels) { $d = Split-Path $r; if (-not $byDir.Contains($d)) { $byDir[$d] = New-Object System.Collections.Generic.List[string] }; $byDir[$d].Add((Split-Path $r -Leaf)) }
+  foreach ($d in $byDir.Keys) {
+    $names = $byDir[$d]
+    for ($i = 0; $i -lt $names.Count; $i += 40) {
+      $chunk = $names.GetRange($i, [Math]::Min(40, $names.Count - $i))
+      $a = @((Q $(if ($d) { Join-Path $from $d } else { $from })), (Q $(if ($d) { Join-Path $to $d } else { $to }))) + @($chunk | ForEach-Object { Q $_ }) + @('/R:1', '/W:1', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/IS', '/IT')
+      $p = Start-Tool robocopy ($a -join ' ')
+      Wait-Walking $p { $label }
+      if ($p.ExitCode -ge 8) { $warnings.Add("Some files in $(Join-Path $from $d) couldn't be copied (robocopy code $($p.ExitCode)).") }
+    }
+  }
+}
+function Copy-Projects($plist, [string]$work) {   # each project's files under projects\<n>, and commits GitHub doesn't have as projects\<n>.bundle
+  $n = 0
+  $roots = @($plist | ForEach-Object { $_.path })
+  foreach ($p in $plist) {
+    if ($p.mode -eq 'none') { continue }
+    $n++; $p.slot = $n; $to = "$work\projects\$n"
+    if ($p.mode -eq 'all' -and $p.kind -eq 'local') {   # the whole folder, without rebuildable folders and projects inside it
+      Copy-Tree $p.path $to "Copying $($p.name)..." (@('/XD') + @($rebuildable | ForEach-Object { Q $_ }) + @((Q 'Claude Moove*'), (Q "$($p.path)\.claude\worktrees")) +
+        @($roots | Where-Object { $_ -ne $p.path -and $_.StartsWith($p.path + '\', [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { Q $_ }))
+    } elseif ($p.mode -eq 'all') {   # a GitHub project: only what GitHub doesn't have
+      foreach ($d in $p.dirs) {
+        $x = @('/XD') + @(($rebuildable + $generated) | ForEach-Object { Q $_ }) + @((Q 'Claude Moove*'), (Q "$($p.path)\.claude\worktrees"))
+        if ($d -eq '.claude' -or $d -like '.claude\*') { $x += @('/XF', '*.lock') }   # Claude's lock files only matter while it runs
+        Copy-Tree "$($p.path)\$d" "$to\$d" "Copying $($p.name)..." $x
+      }
+      if ($p.loose.Count) { Copy-FileList $p.path $to $p.loose "Copying $($p.name)..." }
+    } elseif ($p.mode -eq 'claude' -and $p.claude.Count) { Copy-FileList $p.path $to $p.claude "Copying $($p.name)..." }
+    if ($p.kind -eq 'git' -and $p.ahead) {   # every local branch's commits that aren't on GitHub, as one git bundle
+      $b = "$work\projects\$n.bundle"
+      $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+      & git -C $p.path bundle create $b --branches --not --remotes 2>&1 | Out-Null
+      $ErrorActionPreference = $old
+      $p.bundle = Test-Path -LiteralPath $b
+      if (-not $p.bundle) { $warnings.Add("$($p.name): its $(Plural $p.ahead 'commit') that aren't on GitHub couldn't be packed. Push them first.") }
+    }
+  }
+}
+function Save-PartialSettings($want, [string]$to) {   # settings.json with only the ticked parts' switches (hooks, plugins) in it
+  $from = Join-Path $HomeDir '.claude\settings.json'
+  if (-not (Test-Path -LiteralPath $from)) { return }
+  New-Item -ItemType Directory -Force (Split-Path $to) | Out-Null
+  $drop = @(foreach ($k in $partKeys.Keys) { if (-not $want[$k]) { $partKeys[$k] } })
+  if ($want.settings -and -not $drop.Count) { Copy-Item -LiteralPath $from $to -Force; return }   # all of it, as it is
+  $j = Read-Json $from
+  if ($want.settings) { foreach ($key in $drop) { $j.PSObject.Properties.Remove($key) } }
+  else {   # settings unticked: only the switches of the ticked parts
+    $keep = @(foreach ($k in $partKeys.Keys) { if ($want[$k]) { $partKeys[$k] } })
+    foreach ($prop in @($j.PSObject.Properties)) { if ($keep -notcontains $prop.Name) { $j.PSObject.Properties.Remove($prop.Name) } }
+  }
+  [IO.File]::WriteAllText($to, ($j | ConvertTo-Json -Depth 64), $utf8)
+  (Get-Item -LiteralPath $to).LastWriteTimeUtc = (Get-Item -LiteralPath $from).LastWriteTimeUtc   # it still counts as the age of the original
+}
+function Copy-Selected($want, [string]$work, $plist) {   # copies only the ticked kinds of data into the work folder
   $sh = Join-Path $work 'home'; $sa = Join-Path $work 'appdata\Claude'; $c = Join-Path $HomeDir '.claude'
-  if ($want.settings) {   # everything in ~/.claude except chats, memory, caches and the login token
-    Copy-Tree $c "$sh\.claude" 'Copying settings, hooks, skills and plugins...' (
-      @('/XD') + (($skipDirs + $chatDirs) | ForEach-Object { Q "$c\$_" }) + @('/XF') + (($skipFiles + 'history.jsonl') | ForEach-Object { Q "$c\$_" }) + @('claude-data.zip'))
-    foreach ($f in '.claude.json', 'AGENTS.md') { Copy-One (Join-Path $HomeDir $f) $sh }
+  $parts = @($partDirs.Values | ForEach-Object { $_ })
+  if ($want.settings) {   # the rest of ~/.claude: settings files, scheduled tasks and such (not chats, memory, caches or the login token)
+    Copy-Tree $c "$sh\.claude" 'Copying your settings...' (
+      @('/XD') + (($skipDirs + $chatDirs + $parts) | ForEach-Object { Q "$c\$_" }) +
+      @('/XF') + (($skipFiles + 'history.jsonl', 'CLAUDE.md', 'settings.json') | ForEach-Object { Q "$c\$_" }) + @('claude-data.zip'))
+    Copy-One (Join-Path $HomeDir '.claude.json') $sh
     Copy-One "$claudeDir\claude_desktop_config.json" $sa
   }
+  if ($want.settings -or $want.hooks -or $want.plugins) { Save-PartialSettings $want "$sh\.claude\settings.json" }
+  if ($want.instructions) {
+    Copy-One "$c\CLAUDE.md" "$sh\.claude"; Copy-One (Join-Path $HomeDir 'AGENTS.md') $sh
+    Copy-Tree "$c\rules" "$sh\.claude\rules" 'Copying your instructions...'
+  }
+  foreach ($k in 'hooks', 'skills', 'plugins') { if ($want[$k]) { foreach ($d in $partDirs[$k]) { Copy-Tree "$c\$d" "$sh\.claude\$d" "Copying your $(Get-Lower $k)..." } } }
   if ($want.chats) {
     Copy-Tree "$c\projects" "$sh\.claude\projects" 'Copying your chats...' @('/XD', 'memory')
     foreach ($d in $chatDirs | Where-Object { $_ -ne 'projects' }) { Copy-Tree "$c\$d" "$sh\.claude\$d" 'Copying your chats...' }
@@ -566,44 +791,50 @@ function Copy-Selected($want, [string]$work, $projects) {   # copies only the ti
     }
   }
   if ($want.sidebar) { Copy-Tree "$claudeDir\Local Storage" "$sa\Local Storage" 'Copying your sidebar layout...' }
-  if ($want.projects) {
-    $n = 0
-    foreach ($p in $projects.Values) {
-      $n++; $p.slot = $n
-      foreach ($rel in $p.claudeFiles) {
-        $to = Join-Path "$work\projects\$n" $rel
-        New-Item -ItemType Directory -Force (Split-Path $to) | Out-Null
-        Copy-Item -LiteralPath (Join-Path $p.path $rel) $to -Force
-      }
-    }
-  }
+  if ($want.projects) { Copy-Projects $plist $work }
+}
+function Get-PartDetails([string]$base) {   # what a home folder's .claude holds, kind by kind, for the pick screens (kinds with nothing are left out)
+  $c = Join-Path $base '.claude'
+  $count = { param($dir, $filter) @(Get-ChildItem -LiteralPath "$c\$dir" -Recurse -File -Filter $filter -ErrorAction SilentlyContinue).Count }
+  $s = $null; try { $s = Read-Json "$c\settings.json" } catch {}
+  $d = @{}
+  $ins = @(@('CLAUDE.md', (Test-Path -LiteralPath "$c\CLAUDE.md")), @('AGENTS.md', (Test-Path -LiteralPath (Join-Path $base 'AGENTS.md'))), @('rules', ((& $count 'rules' '*.md') -gt 0))) | Where-Object { $_[1] } | ForEach-Object { $_[0] }
+  if ($ins) { $d.instructions = 'your global ' + (@($ins) -join ', ') }
+  $d.settings = 'settings.json, MCP servers, app settings'
+  $h = & $count 'hooks' '*'
+  if ($h -or ($s -and $s.hooks)) { $d.hooks = $(if ($h) { Plural $h 'hook file' } else { 'set up in settings.json' }) }
+  $sk = @(Get-ChildItem -LiteralPath "$c\skills" -Directory -ErrorAction SilentlyContinue).Count; $cm = & $count 'commands' '*.md'; $ag = & $count 'agents' '*.md'
+  $bits = @(if ($sk) { Plural $sk 'skill' }; if ($cm) { Plural $cm 'command' }; if ($ag) { Plural $ag 'agent' })
+  if ($bits.Count -or (& $count 'output-styles' '*')) { $d.skills = $(if ($bits.Count) { $bits -join ', ' } else { 'output styles' }) }
+  $pl = 0; try { $pl = @((Read-Json "$c\plugins\installed_plugins.json").plugins.PSObject.Properties).Count } catch {}
+  if ($pl -or (Test-Path -LiteralPath "$c\plugins") -or ($s -and $s.enabledPlugins)) { $d.plugins = $(if ($pl) { Plural $pl 'plugin' } else { 'your plugins' }) }
+  $d
 }
 
 # ---------------------------------------------------------------- PACK (laptop you're leaving)
-function Show-PackMenu($items, $state, $risky) {
+function Show-PackMenu($items, $state, $plist) {
   Show-Top 'Pick what comes along, then press Enter.'
   Put '   What comes along' title
   $n = 0
-  foreach ($it in $items) { $n++; Write-Item $n $it $(if ($it.key -eq 'sidebar' -and $state.open) { 'needs Claude closed (press C)' }) }
+  foreach ($it in $items) {
+    $n++
+    if ($it.key -eq 'projects') { $it.on = [bool]@($plist | Where-Object { $_.mode -ne 'none' }).Count; $it.detail = (Get-ProjectsLine $plist) + "  (type $n to pick)" }
+    Write-Item $n $it $(if ($it.key -eq 'sidebar' -and $state.open) { 'needs Claude closed (press C)' })
+  }
   Gap
   if ($state.open) { Put "   Claude is open. That's fine: everything except the sidebar layout can go now." plain; Put '    C  close Claude first, to bring the sidebar layout too' dim }
   else { Put '   [x] Claude is closed, so everything can come along.' ok }
   Gap
   Put '   How it gets to the new laptop' title
-  Put ('    S  ' + $(if ($state.how -eq 'send') { '(o)' } else { '( )' }) + ' send it over the internet with a one-time code (the new laptop must be on)') $(if ($state.how -eq 'send') { 'plain' } else { 'dim' })
+  Put ('    S  ' + $(if ($state.how -eq 'send') { '(o)' } else { '( )' }) + ' send it over the internet with a one-time code') $(if ($state.how -eq 'send') { 'plain' } else { 'dim' })
+  Put "          both laptops on; croc's free relay allows 5 sends an hour per internet connection" dim
   Put ('    U  ' + $(if ($state.how -eq 'usb') { '(o)' } else { '( )' }) + ' carry it on a pendrive or USB stick') $(if ($state.how -eq 'usb') { 'plain' } else { 'dim' })
-  if (@($risky).Count) {
-    Gap
-    $names = @($risky | ForEach-Object { (Split-Path $_.path -Leaf) + ' (' + (Plural $_.unsaved 'change') + ')' })
-    Put ('   Heads up, not on GitHub yet: ' + $(if ($names.Count -gt 4) { ($names[0..3] -join ', ') + ", and $($names.Count - 4) more" } else { $names -join ', ' })) warn
-    Put '   Commit and push them first, or copy those folders yourself.' dim
-  }
   if ($state.msg) { Gap; Put "   $($state.msg)" warn; $state.msg = '' }
   Gap
   Put '   Type a number or letter and press Enter to change something. Just Enter starts, Q quits.' dim
 }
 
-function Invoke-Pack([switch]$FromMenu) {
+function Invoke-Pack {
   $script:doing = 'packing up this laptop'; $script:steps = $null
   Show-Top 'Looking around...'
   $c = Join-Path $HomeDir '.claude'
@@ -613,27 +844,39 @@ function Invoke-Pack([switch]$FromMenu) {
     $transcripts += @(Get-ChildItem -LiteralPath $d.FullName -File -Filter *.jsonl -ErrorAction SilentlyContinue).Count
     if (Test-Path -LiteralPath "$($d.FullName)\memory") { $memories++ }
   }
-  $projects = Get-Projects
-  $pfiles = 0; $pwith = 0; foreach ($p in $projects.Values) { if ($p.claudeFiles.Count) { $pfiles += $p.claudeFiles.Count; $pwith++ } }
+  $plist = @(Get-Projects)
+  if ($Projects) { Set-ProjectModes $plist $Projects }
+  $parts = Get-PartDetails $HomeDir
   $state = @{ open = (Test-ClaudeOpen); how = $(if ($Transfer -ne 'ask') { $Transfer } elseif ($interactive -and -not $Test) { 'send' } else { 'usb' }); msg = '' }
-  $items = @(
-    [ordered]@{ key = 'chats'; on = $true; detail = "$(Plural $metas.Count 'session'), $(Plural $transcripts 'chat')" },
-    [ordered]@{ key = 'settings'; on = $true; detail = 'CLAUDE.md, settings, hooks, skills, plugins' },
-    [ordered]@{ key = 'memory'; on = ($memories -gt 0); detail = $(if ($memories) { "notes Claude keeps, in $(Plural $memories 'project')" } else { 'none yet' }) },
-    [ordered]@{ key = 'projects'; on = ($pfiles -gt 0); detail = $(if ($pfiles) { "$(Plural $pfiles 'file') GitHub doesn't have, in $(Plural $pwith 'project')" } else { 'none found' }) },
-    [ordered]@{ key = 'sidebar'; on = $true; detail = 'how your sidebar is organised' })
-  if ($What.Count) { foreach ($it in $items) { $it.on = $What -contains $it.key } }
-  $risky = @($projects.Values | Where-Object { $_.unsaved -gt 0 })
+  $items = @([ordered]@{ key = 'chats'; on = $true; detail = "$(Plural $metas.Count 'session'), $(Plural $transcripts 'chat')" })
+  if ($memories) { $items += [ordered]@{ key = 'memory'; on = $true; detail = "notes Claude keeps, in $(Plural $memories 'project')" } }
+  foreach ($k in 'instructions', 'settings', 'hooks', 'skills', 'plugins') { if ($parts.ContainsKey($k)) { $items += [ordered]@{ key = $k; on = $true; detail = $parts[$k] } } }
+  $items += [ordered]@{ key = 'sidebar'; on = $true; detail = 'how your sidebar is organised' }
+  if ($plist.Count) { $items += [ordered]@{ key = 'projects'; on = $true; detail = '' } }
+  if ($What.Count) {
+    foreach ($it in $items) { $it.on = $What -contains $it.key }
+    if ($What -notcontains 'projects') { foreach ($p in $plist) { $p.mode = 'none' } }
+  }
+  if ($Plan) {   # what could come along, for the Claude skill to talk through; nothing is packed
+    Write-Result ([ordered]@{ ok = $true; plan = $true; claudeOpen = $state.open
+        what = @($items | ForEach-Object { [ordered]@{ key = $_.key; on = [bool]$_.on; detail = $_.detail } })
+        projects = @($plist | ForEach-Object { [ordered]@{ name = $_.name; path = $_.path; kind = $_.kind; mode = $_.mode; modes = $_.modes; localFiles = $_.count
+              size = $_.size; overLimit = $_.big; sample = $_.sample; claudeFiles = @($_.claude); commitsNotOnGitHub = $_.ahead } })
+        warnings = @($warnings) })
+    return
+  }
 
   while ($interactive) {
     $state.open = Test-ClaudeOpen   # the user may quit Claude themselves
-    Show-PackMenu $items $state $risky
+    Show-PackMenu $items $state $plist
     $a = Read-Choice
     if ($a -eq '') { break }
     if ($a -eq 'Q') { Put '   Nothing was changed.' dim; End-Wait; return }
     if ($a -match '^\d+$' -and [int]$a -ge 1 -and [int]$a -le $items.Count) {
       $it = $items[[int]$a - 1]
-      if ($it.key -eq 'sidebar' -and $state.open) { $state.msg = 'Close Claude first (C) to bring the sidebar layout.' } else { $it.on = -not $it.on }
+      if ($it.key -eq 'projects') { Edit-Projects $plist 'Show-ProjectsOut' }
+      elseif ($it.key -eq 'sidebar' -and $state.open) { $state.msg = 'Close Claude first (C) to bring the sidebar layout.' }
+      else { $it.on = -not $it.on }
     }
     elseif ($a -eq 'C' -and $state.open) { if (Stop-Claude) { $state.open = $false } else { $state.msg = "Claude didn't close. Quit it from its icon near the clock, then press C again." } }
     elseif ($a -eq 'S') { $state.how = 'send' }
@@ -641,6 +884,7 @@ function Invoke-Pack([switch]$FromMenu) {
     else { $state.msg = "I didn't get that one." }
   }
   $want = @{}; foreach ($it in $items) { $want[$it.key] = [bool]$it.on }
+  $want.projects = [bool]@($plist | Where-Object { $_.mode -ne 'none' }).Count -and $want.projects
   $state.open = Test-ClaudeOpen
   if ($state.open) { $want.sidebar = $false }   # its database is locked while Claude runs
   if (-not ($want.Values -contains $true)) { throw 'Nothing was ticked, so there is nothing to pack.' }
@@ -649,7 +893,7 @@ function Invoke-Pack([switch]$FromMenu) {
   if ($state.how -eq 'send') { $script:steps += 'Send it to the new laptop' }
   Set-Step 1
   $work = New-WorkDir; $script:work = $work
-  Copy-Selected $want $work $projects
+  Copy-Selected $want $work $plist
   $took = @($items | Where-Object { $want[$_.key] } | ForEach-Object { Get-Lower $_.key })
   Put ('   [x] Copied: ' + ($took -join ', ') + '.') ok
   if ($state.open -and ($items | Where-Object { $_.key -eq 'sidebar' -and $_.on })) { Put '   (Claude is open, so the sidebar layout stays behind. Close Claude and pack again if you want it.)' dim }
@@ -669,12 +913,16 @@ function Invoke-Pack([switch]$FromMenu) {
   Get-ChildItem -LiteralPath $toolRoot -Filter '*.cmd' | Copy-Item -Destination $dest
   Copy-One (Join-Path $toolRoot 'LICENSE') $dest
   foreach ($f in 'claude-moove.ps1', 'claude-moove-merge.mjs', 'README.md') { Copy-Item -LiteralPath (Join-Path $engine $f) (Join-Path $dest "engine\$f") }
+  $going = @(if ($want.projects) { $plist | Where-Object { $_.mode -ne 'none' } })
   $manifest = [ordered]@{
-    tool = 'Claude Moove'; version = 2; created = (Get-Date).ToString('o'); computer = $env:COMPUTERNAME
+    tool = 'Claude Moove'; version = 3; created = (Get-Date).ToString('o'); computer = $env:COMPUTERNAME
     home = $HomeDir; appData = $AppDataDir; desktop = $DesktopDir; documents = $DocumentsDir
     accounts = @(Get-ChildItem -LiteralPath "$claudeDir\claude-code-sessions" -Directory -ErrorAction SilentlyContinue | ForEach-Object Name)
     sessions = $metas.Count; transcripts = $transcripts; what = @($items | Where-Object { $want[$_.key] } | ForEach-Object { $_.key })
-    projects = @($projects.Values)
+    projects = @($going | ForEach-Object {
+        [ordered]@{ name = $_.name; path = $_.path; kind = $_.kind; mode = $_.mode; remote = $_.remote; branch = $_.branch; head = $_.head; slot = $_.slot
+          count = $(if ($_.mode -eq 'all') { $_.count } elseif ($_.mode -eq 'claude') { $_.claude.Count } else { 0 }); size = $(if ($_.mode -eq 'all') { $_.size } else { 0 })
+          bundle = $_.bundle; ahead = $_.ahead; deleted = @(if ($_.mode -eq 'all') { $_.deleted }); claudeFiles = @($_.claude) } })
   }
   [IO.File]::WriteAllText((Join-Path $dest 'engine\manifest.json'), ($manifest | ConvertTo-Json -Depth 6), $utf8)
   Update-Marker @{ lastPack = (Get-Date).ToString('o') }
@@ -688,7 +936,9 @@ function Invoke-Pack([switch]$FromMenu) {
     if ($sent) { Put '   [x] Sent! The new laptop has everything.' ok }
   }
 
-  $done = @($(if ($want.chats) { "[x] All packed: $(Plural $metas.Count 'session'), $(Plural $transcripts 'chat file'), $mb MB." } else { "[x] All packed: $($took -join ', '), $mb MB." }), '')
+  $done = @($(if ($want.chats) { "[x] All packed: $(Plural $metas.Count 'session'), $(Plural $transcripts 'chat file'), $mb MB." } else { "[x] All packed: $($took -join ', '), $mb MB." }))
+  if ($going.Count) { $done += "[x] Projects: $(($going | ForEach-Object { $_.name + ' (' + (Get-ModeText $_) + ')' }) -join ', ')." }
+  $done += ''
   if ($sent) {
     $done += '[x] Sent to the new laptop. It carries on there by itself.', '',
       "A copy stays on your Desktop as  Claude Moove $stamp  in case you need it again.",
@@ -699,12 +949,14 @@ function Invoke-Pack([switch]$FromMenu) {
       " 2. On the new laptop, open the folder and double-click  2 - UNPACK (on the laptop you're moving to)",
       '    or open PowerShell, paste this line and choose  2  (it finds the folder by itself):',
       "      $oneLiner", '',
-      'Keep that folder private: it holds your full chat history.'
+      'Keep that folder private: it holds your full chat history' + $(if ($going.Count) { ' and your projects'' local files.' } else { '.' })
   }
   foreach ($w in $warnings) { $done += "[!] $w" }
   Show-Big -Bloom $done
   $skipped = @($items | Where-Object { $_.on -and -not $want[$_.key] } | ForEach-Object { $_.key })   # the sidebar, when Claude was open
-  Write-Result ([ordered]@{ ok = $true; folder = $dest; mb = $mb; sessions = $metas.Count; chats = $transcripts; what = $manifest.what; skipped = $skipped; sent = $sent; warnings = @($warnings) })
+  Write-Result ([ordered]@{ ok = $true; folder = $dest; mb = $mb; sessions = $metas.Count; chats = $transcripts; what = $manifest.what; skipped = $skipped
+      projects = @($going | ForEach-Object { [ordered]@{ name = $_.name; mode = $_.mode; files = $(if ($_.mode -eq 'all') { $_.count } else { 0 }); size = $(if ($_.mode -eq 'all') { $_.size } else { 0 }); commits = $(if ($_.bundle) { $_.ahead } else { 0 }) } })
+      sent = $sent; warnings = @($warnings) })
   if ($interactive -and -not $Test -and -not $sent) { Start-Process explorer.exe "/select,`"$dest`"" }
   End-Wait
 }
@@ -894,13 +1146,18 @@ function Find-Source {   # the transfer folder: -From, next to this engine, on t
   Receive-Folder
 }
 
-# Files people care about (global CLAUDE.md, AGENTS.md, settings.json and project Claude files) are compared one by one.
+# Files people care about (global CLAUDE.md, AGENTS.md, settings.json, and the files of projects already here) are compared one by one.
 # When both laptops changed one, nothing is overwritten blindly: keep this PC's, take the old laptop's, or keep both.
+function Test-ClaudeFile([string]$rel) { ($rootFiles -contains $rel) -or ($rel -like '.claude\*') }
 function New-FileItem([string]$in, [string]$dest, [string]$label, [string]$cat, $proj, [string]$rel) {
-  # "keep both" leaves the other copy next to it, so only where a spare copy does nothing: instruction files and .json
-  $bothOk = ($cat -eq 'settings') -or $dest.EndsWith('.json') -or (($cat -eq 'projects') -and ($rootFiles -contains $rel))
-  [pscustomobject]@{ id = $dest; label = $label; incoming = $in; dest = $dest; cat = $cat; project = $proj; rel = $rel; bothOk = $bothOk
-    state = ''; hash = ''; newer = ''; default = ''; choice = '' }
+  # "keep both" leaves the other copy next to it, so only where a spare copy does nothing: instructions, docs, .json and .env files,
+  # but not inside folders where Claude would pick it up as an extra command, agent, skill or rule
+  $leaf = Split-Path $dest -Leaf
+  $active = $rel -match '^\.claude\\(commands|agents|skills|rules|output-styles)\\'
+  $bothOk = ($cat -ne 'projects') -or (-not $active -and (($leaf -match '\.(md|json)$') -or ($leaf -like '.env*')))
+  # origin is the old laptop's file as packed; incoming is what would be used, which for settings.json is assembled per part
+  [pscustomobject]@{ id = $dest; label = $label; incoming = $in; origin = $in; dest = $dest; cat = $cat; project = $proj; rel = $rel; bothOk = $bothOk
+    group = $null; fixed = $false; state = ''; hash = ''; key = ''; newer = ''; default = ''; choice = '' }
 }
 function Test-Pristine($f) {   # this PC's copy of a project file is just what's committed to git
   if (-not $script:hasGit) { return $false }
@@ -911,25 +1168,50 @@ function Update-FileState($f) {   # copy (not here yet), same, settled (in an ea
   $f.state = 'copy'
   if (-not (Test-Path -LiteralPath $f.dest)) { return }
   $f.hash = (Get-FileHash -LiteralPath $f.incoming).Hash
+  $f.key = if ($f.origin -ne $f.incoming) { (Get-FileHash -LiteralPath $f.origin).Hash } else { $f.hash }   # remembered once settled
   if ((Get-FileHash -LiteralPath $f.dest).Hash -eq $f.hash) { $f.state = 'same'; return }
-  if ($script:resolved[$f.dest] -eq $f.hash) { $f.state = 'settled'; return }
+  if ($script:resolved[$f.dest] -eq $f.key) { $f.state = 'settled'; return }
   $f.state = 'conflict'
   $f.newer = if ((Get-Item -LiteralPath $f.incoming -Force).LastWriteTimeUtc -gt (Get-Item -LiteralPath $f.dest -Force).LastWriteTimeUtc) { 'theirs' } else { 'mine' }
-  # A brand-new install's copy, or one that's just what GitHub has, gives way. Instructions are kept both; the rest goes newer-wins.
-  if ($script:firstMoove -or ($f.project -and (Test-Pristine $f))) { $f.default = 'theirs' }
+  # A brand-new install's settings, or a project file that's just what GitHub has, give way (a project set up here is deliberate).
+  # Instructions are kept both; the rest goes newer-wins.
+  if (($script:firstMoove -and -not $f.project) -or ($f.project -and (Test-Pristine $f))) { $f.default = 'theirs' }
   elseif ($f.bothOk -and $f.dest.EndsWith('.md')) { $f.default = 'both' }
   else { $f.default = $f.newer }
   if (-not $f.choice) { $f.choice = $f.default }
+}
+function Build-SettingsJson($P, $want) {   # settings.json from both laptops: each part (hooks, plugins, the rest) from where it's wanted
+  $in = "$($P.sh)\.claude\settings.json"; $lo = "$HomeDir\.claude\settings.json"
+  if (-not (Test-Path -LiteralPath $in)) { return $null }
+  $old = @{ rest = ($want.settings -and $P.packed -contains 'settings') }
+  foreach ($k in $partKeys.Keys) { $old[$k] = [bool]$want[$k] }
+  if ($old.rest -and -not @($partKeys.Keys | Where-Object { -not $old[$_] }).Count) { return $in }   # all of it from the old laptop, as it is
+  if (-not $old.rest -and -not @($partKeys.Keys | Where-Object { $old[$_] }).Count) { return $null }   # none of it
+  $fromOld = Read-Json $in
+  $fromHere = if (Test-Path -LiteralPath $lo) { Read-Json $lo } else { New-Object psobject }
+  $base = if ($old.rest) { $fromOld } else { $fromHere }
+  foreach ($k in $partKeys.Keys) {
+    $src = if ($old[$k]) { $fromOld } else { $fromHere }
+    foreach ($key in $partKeys[$k]) {
+      $v = $src.PSObject.Properties[$key]; $has = [bool]$v; $val = if ($has) { $v.Value } else { $null }   # read before $base changes: it may be the same object
+      $base.PSObject.Properties.Remove($key)
+      if ($has) { $base | Add-Member -NotePropertyName $key -NotePropertyValue $val -Force }
+    }
+  }
+  $out = "$($P.work)\settings.assembled.json"
+  [IO.File]::WriteAllText($out, ($base | ConvertTo-Json -Depth 64), $utf8)
+  (Get-Item -LiteralPath $out).LastWriteTimeUtc = (Get-Item -LiteralPath $in).LastWriteTimeUtc
+  $out
 }
 
 function Get-UnpackPlan([string]$src) {   # unpacks the data next to this PC's, then works out what can come in and what differs
   Remove-Tree $script:work
   $mf = Read-Json (Join-Path $src 'engine\manifest.json')
   $work = New-WorkDir; $script:work = $work
-  $p = Start-Tool tar ('-x -f ' + (Q (Join-Path $src 'engine\claude-data.zip')) + ' -C ' + (Q $work))
-  Wait-Walking $p { 'Unpacking...' }
-  if ($p.ExitCode -ne 0) { throw "Couldn't unpack claude-data.zip (tar code $($p.ExitCode)). It may be damaged: copy the folder over again." }
-  $sh = Join-Path $work 'home'; $sa = Join-Path $work 'appdata\Claude'
+  $tar = Start-Tool tar ('-x -f ' + (Q (Join-Path $src 'engine\claude-data.zip')) + ' -C ' + (Q $work))
+  Wait-Walking $tar { 'Unpacking...' }
+  if ($tar.ExitCode -ne 0) { throw "Couldn't unpack claude-data.zip (tar code $($tar.ExitCode)). It may be damaged: copy the folder over again." }
+  $sh = Join-Path $work 'home'; $sa = Join-Path $work 'appdata\Claude'; $c = "$sh\.claude"
   $pairs = @(Set-PathMap $mf)
   if ($pairs.Count) { Convert-StageFiles $sh $sa }
   # A PC with chats of its own is only ever merged into. One chat doesn't count: it may be the one running the Claude Moove skill.
@@ -942,62 +1224,148 @@ function Get-UnpackPlan([string]$src) {   # unpacks the data next to this PC's, 
   $script:firstMoove = -not $livedIn -and (-not $mk -or $mk.freshInstall)
   $script:resolved = Read-Marker
   $script:hasGit = [bool](Get-Command git -ErrorAction SilentlyContinue)
-  $packed = if ($mf.what) { @($mf.what) } else { @('chats', 'settings', 'memory', 'sidebar') }   # packs from before 1.1 hold all but project files
-  $projects = @(foreach ($pr in @($mf.projects)) {
-      if ($pr) { [pscustomobject]@{ name = (Split-Path $pr.path -Leaf); path = (Convert-Text $pr.path); remote = $pr.remote; unsaved = [int]$pr.unsaved; slot = $pr.slot; files = @($pr.claudeFiles | Where-Object { $_ }) } } })
+  $packed = if ($mf.what) { @($mf.what) } else { @('chats', 'settings', 'memory', 'sidebar') }   # packs from 1.0 hold all but projects
+  if ([int]$mf.version -lt 3 -and $packed -contains 'settings') { $packed += 'instructions', 'hooks', 'skills', 'plugins' }   # before 1.2, settings held all of these
+
+  $plist = @(foreach ($pr in @($mf.projects)) {
+      if (-not $pr) { continue }
+      $path = Convert-Text $pr.path
+      $kind = if ($pr.kind) { $pr.kind } elseif ($pr.remote) { 'git' } else { 'local' }
+      $packedMode = if ($pr.mode) { $pr.mode } else { 'claude' }   # packs before 1.2 hold only Claude files
+      $stage = if ($pr.slot) { Join-Path $work "projects\$($pr.slot)" } else { '' }
+      $hasFiles = [bool]$stage -and (Test-Path -LiteralPath $stage)
+      $bundle = if ($pr.slot -and (Test-Path -LiteralPath (Join-Path $work "projects\$($pr.slot).bundle"))) { Join-Path $work "projects\$($pr.slot).bundle" } else { $null }
+      $here = Test-Path -LiteralPath $path
+      $count = 0; $size = [long]0
+      if ($hasFiles) { $m = Measure-Files $stage @('') @() @() ([long]::MaxValue); $count = $m.count; $size = $m.size }
+      if ($here) { $modes = @('all', 'none') }
+      elseif ($kind -eq 'git' -and $hasFiles) { $modes = @('all', 'github', 'none') }
+      elseif ($kind -eq 'git') { $modes = @('all', 'none') }
+      elseif ($kind -eq 'local' -and $packedMode -eq 'all') { $modes = @('all', 'none') }
+      else { $modes = @('none') }   # only its Claude files came, and the folder isn't here yet
+      [pscustomobject]@{ name = (Split-Path $path -Leaf); path = $path; kind = $kind; remote = $pr.remote; branch = $pr.branch; head = $pr.head
+        packed = $packedMode; stage = $stage; hasFiles = $hasFiles; bundle = $bundle; ahead = [int]$pr.ahead; deleted = @($pr.deleted | Where-Object { $_ })
+        here = $here; modes = $modes; mode = $modes[0]; count = $count; size = $size }
+    })
+  if ($What.Count -and $What -notcontains 'projects') { foreach ($pr in $plist) { $pr.mode = 'none' } }
+  if ($Projects) { Set-ProjectModes $plist $Projects }
+
+  # what's in the package, kind by kind
+  $memDirs = @(Get-ChildItem -LiteralPath "$c\projects" -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'memory') })
+  $sj = $null; try { $sj = Read-Json "$c\settings.json" } catch {}
+  $parts = Get-PartDetails $sh
+  $lsHere = Test-Path -LiteralPath "$claudeDir\Local Storage"
+  $has = [ordered]@{
+    chats = $packed -contains 'chats'; memory = [bool]$memDirs.Count
+    instructions = ($packed -contains 'instructions') -and $parts.ContainsKey('instructions')
+    settings = $packed -contains 'settings'
+    hooks = ($packed -contains 'hooks') -and ((Test-Path -LiteralPath "$c\hooks") -or ($sj -and $sj.PSObject.Properties['hooks']))
+    skills = ($packed -contains 'skills') -and $parts.ContainsKey('skills')
+    plugins = ($packed -contains 'plugins') -and ((Test-Path -LiteralPath "$c\plugins") -or ($sj -and ($sj.PSObject.Properties['enabledPlugins'] -or $sj.PSObject.Properties['extraKnownMarketplaces'])))
+    sidebar = Test-Path -LiteralPath "$sa\Local Storage"; projects = [bool]$plist.Count }
+  $items = @()
+  foreach ($k in $has.Keys) {
+    if (-not $has[$k]) { continue }
+    $detail = switch ($k) {
+      'chats' { "$(Plural $mf.sessions 'session'), $(Plural $mf.transcripts 'chat')" }
+      'memory' { "notes Claude keeps, in $(Plural $memDirs.Count 'project')" }
+      'sidebar' { '' }
+      'projects' { '' }
+      default { $(if ($parts.ContainsKey($k)) { $parts[$k] } else { '' }) }
+    }
+    $items += [ordered]@{ key = $k; on = $(if ($k -eq 'sidebar') { $script:firstMoove -or -not $lsHere } else { $true }); detail = $detail }
+  }
+  if ($What.Count) { foreach ($it in $items) { if ($it.key -ne 'projects') { $it.on = $What -contains $it.key } } }
+  $want = @{}; foreach ($it in $items) { $want[$it.key] = [bool]$it.on }
+  $P = @{ src = $src; mf = $mf; work = $work; sh = $sh; sa = $sa; packed = $packed }
 
   $files = New-Object System.Collections.Generic.List[object]
-  if ($packed -contains 'settings') {
-    foreach ($g in @(@('.claude\CLAUDE.md', 'CLAUDE.md (global)'), @('AGENTS.md', 'AGENTS.md (user folder)'), @('.claude\settings.json', 'settings.json (global)'))) {
+  if ($has.instructions) {
+    foreach ($g in @(@('.claude\CLAUDE.md', 'CLAUDE.md (global)'), @('AGENTS.md', 'AGENTS.md (user folder)'))) {
       $in = Join-Path $sh $g[0]
-      if (Test-Path -LiteralPath $in) { $files.Add((New-FileItem $in (Join-Path $HomeDir $g[0]) $g[1] 'settings' $null $g[0])) }
+      if (Test-Path -LiteralPath $in) { $files.Add((New-FileItem $in (Join-Path $HomeDir $g[0]) $g[1] 'instructions' $null $g[0])) }
     }
   }
-  foreach ($pr in $projects) {
-    if (-not $pr.slot) { continue }
-    foreach ($rel in $pr.files) {
-      $in = Join-Path $work "projects\$($pr.slot)\$rel"
-      if (Test-Path -LiteralPath $in) { $files.Add((New-FileItem $in (Join-Path $pr.path $rel) "$($pr.name)\$rel" 'projects' $pr $rel)) }
+  if ($has.settings) {
+    $in = Build-SettingsJson $P $(if ($want.settings) { $want } else { @{ settings = $true; hooks = $want.hooks; plugins = $want.plugins } })
+    if ($in) { $item = New-FileItem $in (Join-Path $HomeDir '.claude\settings.json') 'settings.json (global)' 'settings' $null '.claude\settings.json'; $item.origin = "$c\settings.json"; $files.Add($item) }
+  }
+  foreach ($pr in $plist) {   # a project that's already here: its files are compared one by one
+    if (-not $pr.here -or -not $pr.hasFiles) { continue }
+    foreach ($fi in Get-ChildItem -LiteralPath $pr.stage -Recurse -File -Force -ErrorAction SilentlyContinue) {
+      $rel = $fi.FullName.Substring($pr.stage.Length + 1)
+      $item = New-FileItem $fi.FullName (Join-Path $pr.path $rel) "$($pr.name)\$rel" 'projects' $pr $rel
+      if (-not (Test-ClaudeFile $rel)) { $item.group = $pr.path }   # everything but Claude's files is settled per project
+      $files.Add($item)
     }
   }
   foreach ($f in $files) { Update-FileState $f }
-  if ($Choices) {   # decided ahead of time (the Claude skill): mine, theirs, both, or the path of a merged file
+  $groups = [ordered]@{}
+  foreach ($f in $files) {
+    if (-not $f.group -or $f.state -ne 'conflict') { continue }
+    if (-not $groups.Contains($f.group)) { $groups[$f.group] = [pscustomobject]@{ path = $f.group; project = $f.project; files = New-Object System.Collections.Generic.List[object]; choice = 'mine'; label = '' } }
+    $groups[$f.group].files.Add($f)
+  }
+  foreach ($g in $groups.Values) {   # this PC's copies win, unless they're all just what git has (a project freshly downloaded here)
+    $g.choice = if (@($g.files | Where-Object { $_.default -ne 'theirs' }).Count) { 'mine' } else { 'theirs' }
+    $g.label = "$($g.project.name): $(Plural $g.files.Count 'other file')"
+  }
+  if ($Choices) {   # decided ahead of time (the Claude skill): mine, theirs, both, or the path of a merged file; <project>\* for a project's other files
     $picked = @{}
-    foreach ($p in (Read-Json $Choices).PSObject.Properties) { $picked[$p.Name.Replace('/', '\')] = [string]$p.Value }
+    foreach ($prop in (Read-Json $Choices).PSObject.Properties) { $picked[$prop.Name.Replace('/', '\')] = [string]$prop.Value }
+    foreach ($g in $groups.Values) { $v = $picked["$($g.path)\*"]; if ($v -eq 'mine' -or $v -eq 'theirs') { $g.choice = $v.ToLower() } }
     foreach ($f in $files) {
       $v = $picked[$f.id]
       if (-not $v) { continue }
-      if ($v -eq 'mine' -or $v -eq 'theirs' -or ($v -eq 'both' -and $f.bothOk)) { $f.choice = $v.ToLower() }
-      elseif (Test-Path -LiteralPath $v -PathType Leaf) { $f.choice = [IO.Path]::GetFullPath($v) }
+      if ($v -eq 'mine' -or $v -eq 'theirs' -or ($v -eq 'both' -and $f.bothOk)) { $f.choice = $v.ToLower(); $f.fixed = $true }
+      elseif (Test-Path -LiteralPath $v -PathType Leaf) { $f.choice = [IO.Path]::GetFullPath($v); $f.fixed = $true }
       else { $warnings.Add("Ignored the choice for $($f.label): '$v' isn't mine, theirs, both or a file.") }
     }
   }
-
-  $memDirs = @(Get-ChildItem -LiteralPath "$sh\.claude\projects" -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'memory') })
-  $pf = @($files | Where-Object { $_.cat -eq 'projects' })
-  $pfProjects = @($pf | ForEach-Object { $_.project.path } | Sort-Object -Unique).Count
-  $missing = @($projects | Where-Object { -not (Test-Path -LiteralPath $_.path) })
-  $fromGit = @($missing | Where-Object { $_.remote })
-  $lsHere = Test-Path -LiteralPath "$claudeDir\Local Storage"
-  $items = @()
-  if ($packed -contains 'chats') { $items += [ordered]@{ key = 'chats'; on = $true; detail = "$(Plural $mf.sessions 'session'), $(Plural $mf.transcripts 'chat')" } }
-  if ($packed -contains 'settings') { $items += [ordered]@{ key = 'settings'; on = $true; detail = 'CLAUDE.md, settings, hooks, skills, plugins' } }
-  if ($memDirs.Count) { $items += [ordered]@{ key = 'memory'; on = $true; detail = "notes Claude keeps, in $(Plural $memDirs.Count 'project')" } }
-  if ($pf.Count) { $items += [ordered]@{ key = 'projects'; on = $true; detail = "$(Plural $pf.Count 'file') GitHub doesn't have, in $(Plural $pfProjects 'project')" } }
-  if (Test-Path -LiteralPath "$sa\Local Storage") { $items += [ordered]@{ key = 'sidebar'; on = ($script:firstMoove -or -not $lsHere); detail = '' } }
-  if ($fromGit.Count) { $items += [ordered]@{ key = 'download'; on = $true; detail = "$(Plural $fromGit.Count 'project folder') from GitHub" } }
-  if ($What.Count) { foreach ($it in $items) { $it.on = $What -contains $it.key } }
-  @{ src = $src; mf = $mf; work = $work; sh = $sh; sa = $sa; pairs = $pairs; livedIn = $livedIn; projects = $projects
-    missing = $missing; fromGit = $fromGit; files = $files; items = $items; lsHere = $lsHere; canReceive = $false
-    installed = (Test-Path -LiteralPath (Join-Path $claudeDir 'config.json')); account = (Get-AccountState $mf)
-    open = (Test-ClaudeOpen); node = [bool](Get-Command node -ErrorAction SilentlyContinue) }
+  $P.pairs = $pairs; $P.livedIn = $livedIn; $P.projects = $plist; $P.files = $files; $P.groups = $groups; $P.items = $items; $P.lsHere = $lsHere
+  $P.canReceive = $false; $P.installed = Test-Path -LiteralPath (Join-Path $claudeDir 'config.json'); $P.account = Get-AccountState $mf
+  $P.open = Test-ClaudeOpen; $P.node = [bool](Get-Command node -ErrorAction SilentlyContinue)
+  $P
 }
-function Get-ShownConflicts($P) {   # differences in the kinds of data that are ticked
+function Get-ShownConflicts($P) {   # files changed on both laptops, one by one, in the kinds of data that are ticked
   $on = @($P.items | Where-Object { $_.on } | ForEach-Object { $_.key })
-  @($P.files | Where-Object { $_.state -eq 'conflict' -and $on -contains $_.cat })
+  @($P.files | Where-Object { $_.state -eq 'conflict' -and -not $_.group -and $on -contains $_.cat -and (-not $_.project -or $_.project.mode -ne 'none') })
+}
+function Get-ShownGroups($P) {   # per project: the other files that differ, settled with one choice
+  if (-not @($P.items | Where-Object { $_.key -eq 'projects' -and $_.on }).Count) { return @() }
+  @($P.groups.Values | Where-Object { $_.project.mode -ne 'none' })
 }
 function Get-ChoiceText([string]$c) {
   switch ($c) { 'both' { 'keep both, Claude merges them' } 'mine' { "keep this PC's" } 'theirs' { "take the old laptop's" } default { 'use the merged version' } }
+}
+function Get-ProjectsInLine($plist) {   # the projects line on the move-in screen
+  $going = @($plist | Where-Object { $_.mode -ne 'none' })
+  $down = @($going | Where-Object { -not $_.here -and $_.kind -eq 'git' }).Count; $copy = @($going | Where-Object { -not $_.here -and $_.kind -ne 'git' }).Count; $here = @($going | Where-Object { $_.here }).Count
+  $bits = @(if ($down) { "$down from GitHub" }; if ($copy) { "$copy copied" }; if ($here) { "$here already here" })
+  "$($going.Count) of $($plist.Count)" + $(if ($bits.Count) { ': ' + ($bits -join ', ') }) 
+}
+function Show-ProjectsIn($plist, $state) {   # move-in: what happens to each project
+  Show-Top 'Pick your projects. Just Enter goes back.'
+  Put '       Project              What happens' title
+  $n = 0
+  foreach ($p in $plist) {
+    $n++; $on = $p.mode -ne 'none'
+    $what = if (-not $on) { 'left out' } elseif ($p.here) { 'already here: add its files' } elseif ($p.kind -eq 'git') { if ($p.mode -eq 'all' -and $p.hasFiles) { 'download + local files' } else { 'download from GitHub' } } else { 'copy the whole folder' }
+    $detail = if ($p.modes.Count -eq 1) { "only its Claude files came; copy the folder from your old laptop to $($p.path) first" }
+      elseif ($p.here) { "$(Plural $p.count 'file') from the old laptop" + $(if ($p.bundle) { ", $(Plural $p.ahead 'unpushed commit')" }) }
+      elseif ($p.kind -eq 'git') { $(if ($p.mode -eq 'all' -and $p.count) { "$(Format-Size $p.size), $(Plural $p.count 'local file'); " }) + $(if ($p.bundle) { "$(Plural $p.ahead 'unpushed commit'); " }) + "to $($p.path)" }
+      else { "$(Format-Size $p.size), to $($p.path)" }
+    Put ('   {0,2}  {1,-20} ' -f $n, $p.name) $(if ($on) { 'plain' } else { 'dim' }) -n
+    Put ('{0,-28} ' -f $what) $(if ($on) { 'pink' } else { 'dim' }) -n
+    Put $detail dim
+  }
+  Gap
+  Put "   GitHub projects download again, with the old laptop's local files and unpushed commits on top." dim
+  Put '   A project that''s already here keeps its own copy of anything that differs, unless you choose otherwise.' dim
+  if (-not $script:hasGit -and @($plist | Where-Object { $_.mode -ne 'none' -and -not $_.here -and $_.kind -eq 'git' }).Count) { Put "   [ ] Git is missing, so projects can't be downloaded. Press G on the main screen to install it." warn }
+  if ($state.msg) { Gap; Put "   $($state.msg)" warn; $state.msg = '' }
+  Gap
+  Put '   Type a number to switch. A brings everything, N nothing. Just Enter goes back.' dim
 }
 
 function Show-UnpackMenu($P, $state) {
@@ -1018,10 +1386,11 @@ function Show-UnpackMenu($P, $state) {
   foreach ($it in $P.items) {
     $n++
     if ($it.key -eq 'sidebar') { $it.detail = if (-not $it.on) { 'this PC keeps its own' } elseif ($P.lsHere) { "replaces this PC's (it's saved first)" } else { 'grouping and pins from your old laptop' } }
-    Write-Item $n $it $(if ($it.key -eq 'download' -and -not $script:hasGit) { 'needs Git (press G)' })
+    if ($it.key -eq 'projects') { $it.on = [bool]@($P.projects | Where-Object { $_.mode -ne 'none' }).Count; $it.detail = (Get-ProjectsInLine $P.projects) + "  (type $n to pick)" }
+    Write-Item $n $it ''
   }
-  $shown = @(Get-ShownConflicts $P)
-  if ($shown.Count) {
+  $shown = @(Get-ShownConflicts $P); $groups = @(Get-ShownGroups $P)
+  if ($shown.Count -or $groups.Count) {
     Gap
     Put '   Changed on both laptops (type a number to switch)' title
     foreach ($f in $shown) {
@@ -1030,12 +1399,18 @@ function Show-UnpackMenu($P, $state) {
       Put (Get-ChoiceText $f.choice) pink -n
       Put $(if ($f.newer -eq 'theirs') { '   newer on the old laptop' } else { '   newer here' }) dim
     }
+    foreach ($g in $groups) {
+      $n++
+      Put ('   {0,2}  {1,-31} ' -f $n, $g.label) plain -n
+      Put (Get-ChoiceText $g.choice) pink -n
+      Put ('   ' + (Get-Sample @($g.files | ForEach-Object { $_.rel }))) dim
+    }
   }
   Gap
-  if ($P.open) { Put '   Claude is open. Settings, memory and project files can come in now;' plain; Put '   chats and the sidebar layout come in the moment you close it.    C  close Claude now' plain }
+  if ($P.open) { Put '   Claude is open. Projects, settings and memory can come in now;' plain; Put '   chats and the sidebar layout come in the moment you close it.    C  close Claude now' plain }
   else { Put '   [x] Claude is closed, so everything can come in.' ok }
   if (-not $P.node) { Put '   [ ] Node.js is missing: many hooks need it, and so do the merge notes.   N  install it' warn }
-  if (-not $script:hasGit -and @($P.items | Where-Object { $_.key -eq 'download' -and $_.on }).Count) { Put '   [ ] Git is missing, so your projects cannot come from GitHub.   G  install it' warn }
+  if (-not $script:hasGit -and @($P.projects | Where-Object { $_.mode -ne 'none' -and -not $_.here -and $_.kind -eq 'git' }).Count) { Put "   [ ] Git is missing, so your projects can't come from GitHub.   G  install it" warn }
   if ($P.canReceive) { Put '    R  receive it over the internet instead, with a code' dim }
   if ($state.msg) { Gap; Put "   $($state.msg)" warn; $state.msg = '' }
   Gap
@@ -1049,10 +1424,10 @@ function Write-Plan($P) {   # -Plan: what would happen, with copies of the other
   $i = 0
   $conflicts = @(foreach ($f in $P.files) {
       if ($f.state -ne 'conflict') { continue }
-      $i++; $copy = Join-Path $review ('{0:00}-{1}' -f $i, (Split-Path $f.dest -Leaf))
+      $i++; $copy = Join-Path $review ('{0:000}-{1}' -f $i, (Split-Path $f.dest -Leaf))
       Copy-Item -LiteralPath $f.incoming $copy -Force
-      [ordered]@{ id = $f.id; label = $f.label; kind = $f.cat; mine = $f.dest; theirs = $copy; newer = $f.newer; suggested = $f.default
-        choices = @(if ($f.bothOk) { 'mine', 'theirs', 'both' } else { 'mine', 'theirs' }) }
+      [ordered]@{ id = $f.id; label = $f.label; kind = $f.cat; group = $(if ($f.group) { "$($f.group)\*" } else { $null }); mine = $f.dest; theirs = $copy; newer = $f.newer
+        suggested = $(if ($f.group) { $P.groups[$f.group].choice } else { $f.default }); choices = @(if ($f.bothOk) { 'mine', 'theirs', 'both' } else { 'mine', 'theirs' }) }
     })
   $wanted = [ordered]@{}; foreach ($it in $P.items) { $wanted[$it.key] = [bool]$it.on }
   Write-Result ([ordered]@{
@@ -1060,8 +1435,10 @@ function Write-Plan($P) {   # -Plan: what would happen, with copies of the other
       livedIn = $P.livedIn; freshInstall = $script:firstMoove; claudeOpen = $P.open; claudeInstalled = $P.installed; account = $P.account
       node = $P.node; git = $script:hasGit; what = $wanted
       paths = @($P.pairs | ForEach-Object { [ordered]@{ old = $_[0]; new = $_[1] } })
+      projects = @($P.projects | ForEach-Object { [ordered]@{ name = $_.name; path = $_.path; here = $_.here; kind = $_.kind; mode = $_.mode; modes = $_.modes
+            files = $_.count; size = $_.size; commits = $(if ($_.bundle) { $_.ahead } else { 0 }) } })
       conflicts = $conflicts
-      missingProjects = @($P.missing | ForEach-Object { [ordered]@{ name = $_.name; path = $_.path; fromGitHub = [bool]$_.remote } })
+      groups = @($P.groups.Values | ForEach-Object { [ordered]@{ id = "$($_.path)\*"; label = $_.label; suggested = $_.choice; choices = @('mine', 'theirs') } })
       waitsForClaudeToClose = @(if ($P.open) { @('chats', 'sidebar') | Where-Object { $wanted[$_] } })
       warnings = @($warnings) })
   Remove-Tree $P.work; $script:work = $null
@@ -1093,33 +1470,55 @@ function Use-Choice($f) {   # a file changed on both laptops, settled the way th
     Save-Safety $f.dest
     Copy-Item -LiteralPath $(if ($c -eq 'theirs') { $f.incoming } else { $c }) $f.dest -Force
   }
-  $script:settled[$f.dest] = $f.hash
-  $script:choicesMade.Add([ordered]@{ id = $f.id; label = $f.label; choice = $(if ($c -in 'mine', 'theirs', 'both') { $c } else { 'merged' }); otherCopy = $other })
+  $script:settled[$f.dest] = $f.key
+  if (-not $f.group) { $script:choicesMade.Add([ordered]@{ id = $f.id; label = $f.label; choice = $(if ($c -in 'mine', 'theirs', 'both') { $c } else { 'merged' }); otherCopy = $other }) }
 }
 function Use-File($f) {   # $true if the file came in or was settled
-  Update-FileState $f   # looks again: the project may have just come from GitHub
+  Update-FileState $f   # looks again: something may have changed since the screen
   if ($f.state -eq 'copy') { New-Item -ItemType Directory -Force (Split-Path $f.dest) | Out-Null; Copy-Item -LiteralPath $f.incoming $f.dest -Force; return $true }
   if ($f.state -eq 'conflict') { Use-Choice $f; return $true }
   $false
 }
-function Move-Settings($P, [switch]$SkipLive, [switch]$LiveOnly) {
-  $sh = $P.sh; $sa = $P.sa
-  $config = @(Get-ChildItem -LiteralPath "$sh\.claude" -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in '.json', '.md' }) +
-    @(Get-ChildItem -LiteralPath "$sh\.claude\plugins" -File -Force -Filter *.json -ErrorAction SilentlyContinue) +
-    @(Get-ChildItem -LiteralPath $sh -File -Force -ErrorAction SilentlyContinue) +
-    @(Get-Item -LiteralPath "$sa\claude_desktop_config.json" -Force -ErrorAction SilentlyContinue)
-  $chosen = @($P.files | Where-Object { $_.cat -eq 'settings' } | ForEach-Object { $_.incoming })
+function Use-PartialSettings($P, $want) {   # only hooks or plugins ticked: their switches go into this PC's settings.json
+  $assembled = Build-SettingsJson $P $want
+  if (-not $assembled) { return }
+  $dest = "$HomeDir\.claude\settings.json"
+  if (Test-Path -LiteralPath $dest) {
+    if ((Get-FileHash -LiteralPath $dest).Hash -eq (Get-FileHash -LiteralPath $assembled).Hash) { return }
+    Save-Safety $dest
+  } else { New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null }
+  Copy-Item -LiteralPath $assembled $dest -Force
+}
+function Move-Parts($P, $want, [switch]$SkipLive, [switch]$LiveOnly) {   # ~/.claude apart from chats and memory, kind by kind
+  $c = "$($P.sh)\.claude"; $sa = $P.sa
   if (-not $LiveOnly) {
-    Copy-Tree "$sh\.claude" "$HomeDir\.claude" 'Putting your settings, hooks, skills and plugins in place...' (
-      @('/XD') + ($chatDirs | ForEach-Object { Q "$sh\.claude\$_" }) + @('/XF', (Q "$sh\.claude\history.jsonl")) +
-      ($config | Where-Object { $_.FullName.StartsWith("$sh\.claude\") } | ForEach-Object { Q $_.FullName })) -Merge
-    foreach ($f in $P.files) { if ($f.cat -eq 'settings') { [void](Use-File $f) } }
+    if ($want.instructions) {
+      foreach ($f in $P.files) { if ($f.cat -eq 'instructions') { [void](Use-File $f) } }
+      Copy-Tree "$c\rules" "$HomeDir\.claude\rules" 'Putting your rules in place...' -Merge
+    }
+    foreach ($k in 'hooks', 'skills') { if ($want[$k]) { foreach ($d in $partDirs[$k]) { Copy-Tree "$c\$d" "$HomeDir\.claude\$d" "Putting your $(Get-Lower $k) in place..." -Merge } } }
+    if ($want.plugins) {   # plugin lists go newer-wins with a safety copy; the plugins themselves file by file
+      $lists = @(Get-ChildItem -LiteralPath "$c\plugins" -File -Filter *.json -Force -ErrorAction SilentlyContinue)
+      Copy-Tree "$c\plugins" "$HomeDir\.claude\plugins" 'Putting your plugins in place...' (@('/XF') + @($lists | ForEach-Object { Q $_.FullName })) -Merge
+      foreach ($f in $lists) { Copy-Newer $f "$HomeDir\.claude\plugins\$($f.Name)" }
+    }
+    if ($want.settings) {   # the rest of ~/.claude; its loose files are handled below
+      $parts = @($partDirs.Values | ForEach-Object { $_ })
+      Copy-Tree $c "$HomeDir\.claude" 'Putting your settings in place...' (
+        @('/XD') + @(($chatDirs + $parts) | ForEach-Object { Q "$c\$_" }) + @('/XF') + @(Get-ChildItem -LiteralPath $c -File -Force -ErrorAction SilentlyContinue | ForEach-Object { Q $_.FullName })) -Merge
+      foreach ($f in $P.files) { if ($f.cat -eq 'settings') { [void](Use-File $f) } }
+    } elseif ($want.hooks -or $want.plugins) { Use-PartialSettings $P $want }
   }
-  foreach ($f in $config) {
-    $live = $liveNames -contains $f.Name
-    if (($chosen -contains $f.FullName) -or ($SkipLive -and $live) -or ($LiveOnly -and -not $live)) { continue }
-    $dest = if ($f.FullName.StartsWith($sa)) { $claudeDir + $f.FullName.Substring($sa.Length) } else { $HomeDir + $f.FullName.Substring($sh.Length) }
-    Copy-Newer $f $dest
+  if ($want.settings) {   # loose settings files: newer wins; the ones a running Claude rewrites wait until it's closed
+    $loose = @(Get-ChildItem -LiteralPath $c -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin 'CLAUDE.md', 'settings.json', 'history.jsonl' }) +
+      @(Get-ChildItem -LiteralPath $P.sh -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'AGENTS.md' }) +
+      @(Get-Item -LiteralPath "$sa\claude_desktop_config.json" -Force -ErrorAction SilentlyContinue)
+    foreach ($f in $loose) {
+      $live = $liveNames -contains $f.Name
+      if (($SkipLive -and $live) -or ($LiveOnly -and -not $live)) { continue }
+      $dest = if ($f.FullName.StartsWith($sa)) { $claudeDir + $f.FullName.Substring($sa.Length) } else { $HomeDir + $f.FullName.Substring($P.sh.Length) }
+      Copy-Newer $f $dest
+    }
   }
 }
 function Move-Memory($P) {
@@ -1127,25 +1526,65 @@ function Move-Memory($P) {
     if (Test-Path -LiteralPath "$($d.FullName)\memory") { Copy-Tree "$($d.FullName)\memory" "$HomeDir\.claude\projects\$($d.Name)\memory" 'Putting memory in place...' -Merge }
   }
 }
-function Move-ProjectFiles($P) {   # into the project folders that are here; the others wait until their folder is
-  $n = 0
-  foreach ($pr in $P.projects) {
-    $mine = @($P.files | Where-Object { $_.project -eq $pr })
-    if (-not $mine.Count) { continue }
-    if (-not (Test-Path -LiteralPath $pr.path)) { continue }   # the warnings at the end say what to do
-    foreach ($f in $mine) { if (Use-File $f) { $n++ } }
-  }
-  if ($n) { Put "   [x] Project Claude files are in: $(Plural $n 'file')." ok }
+function Invoke-GitStep([string]$dir) {   # a git command whose output doesn't matter; $true if it worked
+  $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  try { & git -C $dir @args 2>&1 | Out-Null; $LASTEXITCODE -eq 0 } finally { $ErrorActionPreference = $old }
 }
-function Clone-Projects($P) {   # downloads missing project folders from GitHub to exactly their old places
-  foreach ($m in $P.fromGit) {
-    if (Test-Path -LiteralPath $m.path) { continue }
-    if ($Test) { $warnings.Add("Test run: '$($m.name)' wasn't downloaded."); continue }
-    New-Item -ItemType Directory -Force (Split-Path $m.path) | Out-Null
-    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    if ($quiet) { & git clone $m.remote $m.path 2>&1 | Out-Null } else { & git clone $m.remote $m.path | Out-Host }
-    $ErrorActionPreference = $old
-    if (Test-Path -LiteralPath $m.path) { Put ('   [x] Downloaded ' + $m.name) ok; $script:downloaded++ }
+function Get-Project($pr) {   # downloads a project from GitHub to exactly its old place; $true when it's there
+  if ($Test -and -not (Test-Path -LiteralPath $pr.remote)) { $warnings.Add("Test run: '$($pr.name)' wasn't downloaded."); return $false }   # tests use a local folder as "GitHub"
+  New-Item -ItemType Directory -Force (Split-Path $pr.path) | Out-Null
+  $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  if ($quiet -or $Test) { & git clone -q $pr.remote $pr.path 2>&1 | Out-Null } else { & git clone $pr.remote $pr.path | Out-Host }
+  $ErrorActionPreference = $old
+  if (Test-Path -LiteralPath (Join-Path $pr.path '.git')) { return $true }
+  $warnings.Add("Couldn't download '$($pr.name)' from $($pr.remote). Copy it from your old laptop to exactly: $($pr.path)")
+  $false
+}
+function Save-Bundle($pr) {   # commits that couldn't be added: kept in the safety folder for later
+  $keep = Join-Path $script:safety "$($pr.name).bundle"
+  New-Item -ItemType Directory -Force $script:safety | Out-Null
+  Copy-Item -LiteralPath $pr.bundle $keep -Force
+  $warnings.Add("$($pr.name): its commits that weren't on GitHub couldn't be added. They're saved in $keep (fetch that file with git to get them).")
+}
+function Restore-Commits($pr) {   # a fresh download: commits that weren't on GitHub, then the old laptop's branch and commit; how many came back
+  $got = 0
+  if ($pr.bundle) { if (Invoke-GitStep $pr.path fetch -q --update-head-ok $pr.bundle '+refs/heads/*:refs/heads/*') { $got = $pr.ahead } else { Save-Bundle $pr } }
+  if ($pr.head -and (Invoke-GitStep $pr.path cat-file -e "$($pr.head)^{commit}")) {
+    if ($pr.branch -and $pr.branch -ne 'HEAD') {
+      [void](Invoke-GitStep $pr.path checkout -q -f -B $pr.branch $pr.head)
+      if (Invoke-GitStep $pr.path rev-parse -q --verify "refs/remotes/origin/$($pr.branch)") { [void](Invoke-GitStep $pr.path branch -q "--set-upstream-to=origin/$($pr.branch)" $pr.branch) }
+    } else { [void](Invoke-GitStep $pr.path checkout -q -f --detach $pr.head) }
+  } elseif ($pr.branch -and $pr.branch -ne 'HEAD') { [void](Invoke-GitStep $pr.path checkout -q $pr.branch) }
+  $got
+}
+function Move-Projects($P) {   # GitHub projects come down again, then everything the old laptop had on top
+  foreach ($pr in $P.projects) {
+    if ($pr.mode -eq 'none') { continue }
+    if (-not $pr.here -and -not (Test-Path -LiteralPath $pr.path)) {
+      if ($pr.kind -eq 'git') {
+        if (-not $script:hasGit) { $warnings.Add("Git isn't installed, so '$($pr.name)' wasn't downloaded. Install Git and move in again."); continue }
+        if (-not (Get-Project $pr)) { continue }
+        $commits = Restore-Commits $pr
+        if ($pr.mode -eq 'all' -and $pr.hasFiles) { Copy-Tree $pr.stage $pr.path "Adding $($pr.name)'s local files..." }   # a fresh download: the old laptop's files go on top
+        if ($pr.mode -eq 'all') { foreach ($d in $pr.deleted) { Remove-Item -LiteralPath (Join-Path $pr.path $d) -Force -ErrorAction SilentlyContinue } }
+        Put ("   [x] $($pr.name): downloaded from GitHub" + $(if ($pr.mode -eq 'all' -and $pr.count) { ", with $(Plural $pr.count 'local file')" }) + $(if ($commits) { ", and $(Plural $commits 'commit') that weren't on GitHub" }) + '.') ok
+        $script:projectsIn++
+      } elseif ($pr.packed -eq 'all') {
+        Copy-Tree $pr.stage $pr.path "Copying $($pr.name)..."
+        Put "   [x] $($pr.name): copied, $(Format-Size $pr.size)." ok
+        $script:projectsIn++
+      }
+      continue
+    }
+    # already here: add what's missing, settle what differs, and keep commits that weren't on GitHub as old-laptop/ branches
+    $n = 0; foreach ($f in $P.files) { if ($f.project -eq $pr -and (Use-File $f)) { $n++ } }
+    $extra = ''
+    if ($pr.bundle -and (Test-Path -LiteralPath (Join-Path $pr.path '.git'))) {
+      if (Invoke-GitStep $pr.path fetch -q $pr.bundle '+refs/heads/*:refs/remotes/old-laptop/*') { $extra = "; its commits that weren't on GitHub are in the old-laptop/ branches" }
+      else { Save-Bundle $pr }
+    }
+    Put "   [x] $($pr.name): $(Plural $n 'file') added or settled$extra." ok
+    $script:projectsIn++
   }
 }
 function Move-Chats($P) {   # needs Claude closed: the app keeps its session list in memory and writes it back
@@ -1200,38 +1639,42 @@ function Wait-ClaudeClosed {   # $true once Claude is closed, $false if the user
 
 function Invoke-MoveIn($P) {
   $want = @{}; foreach ($it in $P.items) { $want[$it.key] = [bool]$it.on }
-  if ($want.download -and -not $script:hasGit) { $want.download = $false; $warnings.Add("Git isn't installed, so your projects weren't downloaded from GitHub.") }
+  $projectsTicked = $P.projects.Count -and -not ($What.Count -and $What -notcontains 'projects')   # for the "copy these folders first" warning
+  if (-not $want.projects) { foreach ($pr in $P.projects) { $pr.mode = 'none' } }
+  $want.projects = [bool]@($P.projects | Where-Object { $_.mode -ne 'none' }).Count
   if (-not ($want.Values -contains $true)) { throw 'Nothing was ticked, so there is nothing to move in.' }
   $script:safety = Join-Path $HomeDir ".claude-moove-safety\$stamp"
-  $script:replaced = 0; $script:downloaded = 0
+  $script:replaced = 0; $script:projectsIn = 0
   $script:fileNotes = New-Object System.Collections.Generic.List[object]
   $script:choicesMade = New-Object System.Collections.Generic.List[object]
   $script:settled = @{}; $script:rel = @{}; $script:forkOf = @{}; $script:pending = @{}; $script:transcriptDir = @{}
   $script:count = @{ new = 0; updated = 0; kept = 0; both = 0 }
   $script:fromPc = if ($P.mf.computer) { [string]$P.mf.computer } else { 'other laptop' }
   $script:fromTag = $script:fromPc -replace '[^A-Za-z0-9]+', '-'
+  if ($want.settings) { $assembled = Build-SettingsJson $P $want; foreach ($f in $P.files) { if ($f.cat -eq 'settings' -and $assembled) { $f.incoming = $assembled } } }   # with the final picks
+  foreach ($f in $P.files) { if ($f.group -and -not $f.fixed -and $P.groups.Contains($f.group)) { $f.choice = $P.groups[$f.group].choice } }
   if ($WhenClosed -and (Test-ClaudeOpen)) {
     Show-Top 'Close Claude, and the rest comes in.'
     if (-not (Wait-ClaudeClosed)) { Remove-Tree $P.work; $script:work = $null; Put '   Nothing more was changed. Run this again once Claude is closed.' dim; End-Wait; return }
   }
-  $files = $want.settings -or $want.memory -or $want.projects
+  $parts = @('instructions', 'settings', 'hooks', 'skills', 'plugins', 'memory' | Where-Object { $want[$_] })
   $later = $want.chats -or $want.sidebar
   $script:steps = @()
-  if ($want.download) { $script:steps += 'Download your projects' }
-  if ($files) { $script:steps += 'Settings, memory and project files' }
+  if ($want.projects) { $script:steps += 'Your projects' }
+  if ($parts.Count) { $script:steps += 'Settings, instructions and memory' }
   if ($later) { $script:steps += 'Chats and sidebar layout' }
   $s = 0; $waiting = @(); $open = Test-ClaudeOpen
 
-  if ($want.download) { $s++; Set-Step $s; Clone-Projects $P }
-  if ($files) {   # these are fine with Claude open
+  if ($want.projects) { $s++; Set-Step $s; Move-Projects $P }
+  if ($parts.Count) {   # these are fine with Claude open
     $s++; Set-Step $s
-    if ($want.settings) { Move-Settings $P -SkipLive:($open -and $later); Put '   [x] Settings, hooks, skills and plugins are in.' ok }
-    if ($want.memory) { Move-Memory $P; Put '   [x] Memory is in.' ok }
-    if ($want.projects) { Move-ProjectFiles $P }
-    foreach ($c in $script:choicesMade) {
-      $how = switch ($c.choice) { 'both' { 'kept both; the old laptop''s is next to it as ' + (Split-Path $c.otherCopy -Leaf) } 'mine' { "kept this PC's" } 'theirs' { "took the old laptop's" } default { 'used the merged version' } }
-      Put "   [x] $($c.label): $how." ok
-    }
+    Move-Parts $P $want -SkipLive:($open -and $later)
+    if ($want.memory) { Move-Memory $P }
+    Put ('   [x] In: ' + (($parts | ForEach-Object { Get-Lower $_ }) -join ', ') + '.') ok
+  }
+  foreach ($c in $script:choicesMade) {
+    $how = switch ($c.choice) { 'both' { 'kept both; the old laptop''s is next to it as ' + (Split-Path $c.otherCopy -Leaf) } 'mine' { "kept this PC's" } 'theirs' { "took the old laptop's" } default { 'used the merged version' } }
+    Put "   [x] $($c.label): $how." ok
   }
   if ($later) {   # these need Claude closed
     $s++; Set-Step $s
@@ -1240,7 +1683,7 @@ function Invoke-MoveIn($P) {
       $waiting = @(@('chats', 'sidebar') | Where-Object { $want[$_] }) + @(if ($want.settings -and $open) { 'settings' })
       Put '   Claude is still open, so your chats and sidebar layout wait for now.' warn
     } else {
-      if ($want.settings -and $open) { Move-Settings $P -LiveOnly }
+      if ($want.settings -and $open) { Move-Parts $P $want -LiveOnly }
       if ($want.chats) { Move-Chats $P }
       if ($want.sidebar) { Move-Sidebar $P }
     }
@@ -1261,27 +1704,12 @@ function Invoke-MoveIn($P) {
     if (Get-Command node -ErrorAction SilentlyContinue) { & node $hook --install (Join-Path $HomeDir '.claude\settings.json') }
     else { $warnings.Add("Claude's one-time notes about what changed on both laptops need Node.js. Everything is still there; install Node.js and move in again to switch them on.") }
   }
-  $toCopy = @(); $filesWait = 0
-  foreach ($m in $P.missing) {
-    $nf = if ($want.projects) { @($P.files | Where-Object { $_.project -eq $m }).Count } else { 0 }
-    $then = if ($nf) { ", then move in again for its $(Plural $nf 'Claude file')" } else { '' }
-    if (-not (Test-Path -LiteralPath $m.path)) {
-      if (-not $m.remote) { $toCopy += $m; $filesWait += $nf }
-      elseif ($want.download -and -not $Test) { $warnings.Add("Couldn't download '$($m.name)'. Copy it from your old laptop to exactly: $($m.path)$then.") }
-      elseif ($nf) { $warnings.Add("'$($m.name)' isn't on this laptop yet, so its $(Plural $nf 'Claude file') didn't come in. Get the project, then move in again.") }
-    }
-    elseif ($m.unsaved -gt 0) { $warnings.Add("'$($m.name)' came from GitHub, but its $(Plural $m.unsaved 'unsaved change') from the old laptop aren't in it. Copy them over if you need them.") }
-  }
-  if ($toCopy.Count -le 3) {   # folders that aren't on GitHub: name each, or sum up a long list
-    foreach ($m in $toCopy) {
-      $nf = if ($want.projects) { @($P.files | Where-Object { $_.project -eq $m }).Count } else { 0 }
-      $warnings.Add("Copy the folder '$($m.name)' from your old laptop to exactly: $($m.path)$(if ($nf) { ", then move in again for its $(Plural $nf 'Claude file')" }).")
-    }
-  } else {
-    $names = @($toCopy | ForEach-Object { $_.name })
+  $waitFor = @(if ($projectsTicked) { $P.projects | Where-Object { -not $_.here -and $_.modes.Count -eq 1 -and $_.hasFiles } })   # only their Claude files came, and the folder isn't here
+  if ($waitFor.Count -le 3) { foreach ($pr in $waitFor) { $warnings.Add("Copy the folder '$($pr.name)' from your old laptop to exactly: $($pr.path), then move in again for its $(Plural $pr.count 'Claude file').") } }
+  else {
+    $names = @($waitFor | ForEach-Object { $_.name })
     $shown = if ($names.Count -gt 6) { ($names[0..4] -join ', ') + ", and $($names.Count - 5) more" } else { $names -join ', ' }
-    $warnings.Add("$($toCopy.Count) project folders aren't on this laptop or GitHub: $shown. " +
-      "Copy the ones you need from your old laptop to the same place, for example $($toCopy[0].path)$(if ($filesWait) { ", then move in again for their Claude files" }).")
+    $warnings.Add("$($waitFor.Count) project folders aren't on this laptop: $shown. Copy them from your old laptop to the same place, for example $($waitFor[0].path), then move in again for their Claude files.")
   }
   $settled = Read-Marker; foreach ($k in $script:settled.Keys) { $settled[$k] = $script:settled[$k] }
   Update-Marker @{ lastUnpack = (Get-Date).ToString('o'); from = $script:fromPc; resolved = $settled; freshInstall = ($script:firstMoove -and $waiting.Count -gt 0) }
@@ -1300,6 +1728,7 @@ function Invoke-MoveIn($P) {
     $final += "[!] Still to come: $(($waiting | ForEach-Object { Get-Lower $_ }) -join ', '). They need Claude closed."
     $final += $(if ($opened) { '    A small Claude Moove window is waiting: close Claude, and they come in right away.' } else { '    Close Claude and move in again; it only adds what is missing.' })
   } else { $final += "[x] You're moved in. Open Claude: your sessions are in the sidebar." }
+  if ($script:projectsIn) { $final += "[x] $(Plural $script:projectsIn 'project') set up just like on your old laptop." }
   if ($cnt.both) { $final += "[x] Used on both laptops: $(Plural $cnt.both 'chat'). You have both: the one from here, and the one marked '(other laptop)'.", '    The first time you open either, Claude gets a one-time note about what happened in the other.' }
   if ($script:fileNotes.Count) { $final += "[x] Kept both versions of $(Plural $script:fileNotes.Count 'file') changed on both laptops. Next time you start Claude,", "    it offers to merge them. The old laptop's versions end in  .from-$($script:fromTag)" }
   if ($script:replaced) { $final += "    Anything replaced is saved in $($script:safety)" }
@@ -1311,7 +1740,8 @@ function Invoke-MoveIn($P) {
       ok = $true; folder = $P.src; from = $script:fromPc
       moved = @($P.items | Where-Object { $want[$_.key] -and $waiting -notcontains $_.key } | ForEach-Object { $_.key }); waiting = $waiting; finishWindow = $opened
       sessions = [ordered]@{ added = $cnt.new; updated = $cnt.updated; unchanged = $cnt.kept; usedOnBoth = $cnt.both }
-      choices = $script:choicesMade.ToArray(); downloaded = $script:downloaded
+      projects = @($P.projects | Where-Object { $_.mode -ne 'none' } | ForEach-Object { [ordered]@{ name = $_.name; path = $_.path; mode = $_.mode; wasHere = $_.here } })
+      choices = $script:choicesMade.ToArray(); groups = @($P.groups.Values | Where-Object { $_.project.mode -ne 'none' } | ForEach-Object { [ordered]@{ id = "$($_.path)\*"; choice = $_.choice; files = $_.files.Count } })
       safetyFolder = $(if ($script:replaced) { $script:safety } else { $null }); warnings = @($warnings) })
   End-Wait
 }
@@ -1328,18 +1758,19 @@ function Invoke-Unpack {
     $P.installed = Test-Path -LiteralPath (Join-Path $claudeDir 'config.json'); $P.account = Get-AccountState $P.mf; $P.open = Test-ClaudeOpen
     Show-UnpackMenu $P $state
     $a = Read-Choice
-    $shown = @(Get-ShownConflicts $P); $k = 0
+    $shown = @(Get-ShownConflicts $P); $groups = @(Get-ShownGroups $P); $k = 0
+    $ni = $P.items.Count; $nc = $shown.Count
     if ($a -eq '') { if ($P.installed) { break }; $state.msg = "Claude isn't installed yet: press D for the download page, open Claude once and sign in, then press Enter." }
     elseif ($a -eq 'Q') { Remove-Tree $P.work; $script:work = $null; Put '   Nothing was changed.' dim; End-Wait; return }
-    elseif ([int]::TryParse($a, [ref]$k) -and $k -ge 1 -and $k -le $P.items.Count + $shown.Count) {
-      if ($k -le $P.items.Count) {
+    elseif ([int]::TryParse($a, [ref]$k) -and $k -ge 1 -and $k -le $ni + $nc + $groups.Count) {
+      if ($k -le $ni) {
         $it = $P.items[$k - 1]
-        if ($it.key -eq 'download' -and -not $script:hasGit) { $state.msg = 'Downloading projects needs Git: press G to install it.' } else { $it.on = -not $it.on }
-      } else {
-        $f = $shown[$k - $P.items.Count - 1]
+        if ($it.key -eq 'projects') { Edit-Projects $P.projects 'Show-ProjectsIn' } else { $it.on = -not $it.on }
+      } elseif ($k -le $ni + $nc) {
+        $f = $shown[$k - $ni - 1]
         $opts = if ($f.bothOk) { @('both', 'mine', 'theirs') } else { @('mine', 'theirs') }
         $f.choice = $opts[([array]::IndexOf($opts, $f.choice) + 1) % $opts.Count]
-      }
+      } else { $g = $groups[$k - $ni - $nc - 1]; $g.choice = if ($g.choice -eq 'mine') { 'theirs' } else { 'mine' } }
     }
     elseif ($a -eq 'C' -and $P.open) { if (-not (Stop-Claude)) { $state.msg = "Claude didn't close. Quit it from its icon near the clock." } }
     elseif ($a -eq 'N' -and -not $P.node) { Install-Tool 'node'; $P.node = [bool](Get-Command node -ErrorAction SilentlyContinue) }
@@ -1397,6 +1828,14 @@ function Show-Fail([string]$msg) {
 }
 
 function Invoke-Preview {   # draws each screen once, without doing anything, to check how they look
+  $fakeProjects = @(
+    [ordered]@{ name = 'recipe-app'; kind = 'git'; mode = 'all'; modes = @('all', 'github', 'none'); count = 14; size = 2202010; big = $false; ahead = 2; claude = @(); sample = 'data\, .env, ...' },
+    [ordered]@{ name = 'website'; kind = 'git'; mode = 'all'; modes = @('all', 'github', 'none'); count = 1; size = 900; big = $false; ahead = 0; claude = @('.claude\settings.local.json'); sample = '.claude\' },
+    [ordered]@{ name = 'ml-experiments'; kind = 'git'; mode = 'github'; modes = @('all', 'github', 'none'); count = 1234; size = 891289600; big = $true; ahead = 0; claude = @(); sample = 'datasets\, runs\' },
+    [ordered]@{ name = 'notes'; kind = 'local'; mode = 'all'; modes = @('all', 'claude', 'none'); count = 37; size = 47185920; big = $false; ahead = 0; claude = @('CLAUDE.md'); sample = 'drafts\, CLAUDE.md, ...' },
+    [ordered]@{ name = 'Desktop'; kind = 'special'; mode = 'claude'; modes = @('claude', 'none'); count = 0; size = 0; big = $false; ahead = 0; claude = @('CLAUDE.md'); sample = '' },
+    [ordered]@{ name = 'old-prototype'; kind = 'git'; mode = 'none'; modes = @('all', 'github', 'none'); count = 3; size = 4096; big = $false; ahead = 0; claude = @(); sample = 'scratch\' })
+
   Write-Host '@@SCREEN The first thing you see'
   Show-Big @(
     "Hi! I move all your Claude stuff from one Windows laptop to another. What are we doing?", '',
@@ -1409,11 +1848,19 @@ function Invoke-Preview {   # draws each screen once, without doing anything, to
   $script:doing = 'packing up this laptop'
   $items = @(
     [ordered]@{ key = 'chats'; on = $true; detail = '42 sessions, 120 chats' },
-    [ordered]@{ key = 'settings'; on = $true; detail = 'CLAUDE.md, settings, hooks, skills, plugins' },
     [ordered]@{ key = 'memory'; on = $true; detail = 'notes Claude keeps, in 6 projects' },
-    [ordered]@{ key = 'projects'; on = $true; detail = "5 files GitHub doesn't have, in 3 projects" },
-    [ordered]@{ key = 'sidebar'; on = $true; detail = 'how your sidebar is organised' })
-  Show-PackMenu $items @{ open = $true; how = 'send'; msg = '' } @([pscustomobject]@{ path = 'C:\Users\Alex\Desktop\recipe-app'; unsaved = 2 })
+    [ordered]@{ key = 'instructions'; on = $true; detail = 'your global CLAUDE.md, AGENTS.md' },
+    [ordered]@{ key = 'settings'; on = $true; detail = 'settings.json, MCP servers, app settings' },
+    [ordered]@{ key = 'hooks'; on = $false; detail = '3 hook files' },
+    [ordered]@{ key = 'skills'; on = $true; detail = '4 skills, 2 commands, 1 agent' },
+    [ordered]@{ key = 'plugins'; on = $true; detail = '5 plugins' },
+    [ordered]@{ key = 'sidebar'; on = $true; detail = 'how your sidebar is organised' },
+    [ordered]@{ key = 'projects'; on = $true; detail = '' })
+  Show-PackMenu $items @{ open = $true; how = 'send'; msg = '' } $fakeProjects
+  Put '   > ' title
+
+  Write-Host '@@SCREEN Packing: pick your projects'
+  Show-ProjectsOut $fakeProjects @{ msg = '' }
   Put '   > ' title
 
   Write-Host '@@SCREEN Sending it over the internet with a one-time code'
@@ -1428,33 +1875,43 @@ function Invoke-Preview {   # draws each screen once, without doing anything, to
   Put '   then choose  2  (move in) and type the code above when it asks.' plain
   Put '   Keep this window open until it says done.' dim
   Put '   The code works once: only type it on your own laptop.' dim
+  Put "   If the new laptop can't connect, close this and carry the folder instead (it's on your Desktop)." dim
   Gap
   Put '   Sending...  47%  1:12' plain
 
   Write-Host '@@SCREEN Moving in: pick what comes in, and settle what changed on both laptops'
   $script:doing = 'moving in on this laptop'; $script:steps = $null; $script:hasGit = $true
-  $fake = { param($label, $cat, $choice, $newer) [pscustomobject]@{ label = $label; cat = $cat; state = 'conflict'; choice = $choice; newer = $newer; bothOk = $true } }
+  $proj = [pscustomobject]@{ name = 'recipe-app'; mode = 'all' }
+  $fake = { param($label, $cat, $choice, $newer) [pscustomobject]@{ label = $label; cat = $cat; state = 'conflict'; choice = $choice; newer = $newer; bothOk = $true; group = $null; project = $null } }
   $P = @{
     src = 'E:\Claude Moove 2026-01-01 1200'; mf = [pscustomobject]@{ computer = 'OLD-LAPTOP'; created = '2026-01-01T12:00:00' }
     livedIn = $true; account = 'same'; lsHere = $true; open = $true; node = $true; canReceive = $true
     pairs = @(@('C:\Users\Alex\Desktop', 'C:\Users\alex.lee\OneDrive\Desktop'), @('C:\Users\Alex', 'C:\Users\alex.lee'))
     items = @(
       [ordered]@{ key = 'chats'; on = $true; detail = '42 sessions, 120 chats' },
-      [ordered]@{ key = 'settings'; on = $true; detail = 'CLAUDE.md, settings, hooks, skills, plugins' },
       [ordered]@{ key = 'memory'; on = $true; detail = 'notes Claude keeps, in 6 projects' },
-      [ordered]@{ key = 'projects'; on = $true; detail = "5 files GitHub doesn't have, in 3 projects" },
+      [ordered]@{ key = 'instructions'; on = $true; detail = 'your global CLAUDE.md, AGENTS.md' },
+      [ordered]@{ key = 'settings'; on = $true; detail = 'settings.json, MCP servers, app settings' },
+      [ordered]@{ key = 'skills'; on = $true; detail = '4 skills, 2 commands, 1 agent' },
+      [ordered]@{ key = 'plugins'; on = $true; detail = '5 plugins' },
       [ordered]@{ key = 'sidebar'; on = $false; detail = '' },
-      [ordered]@{ key = 'download'; on = $true; detail = '2 project folders from GitHub' })
+      [ordered]@{ key = 'projects'; on = $true; detail = '' })
+    projects = @(
+      [pscustomobject]@{ name = 'recipe-app'; mode = 'all'; here = $true; kind = 'git' },
+      [pscustomobject]@{ name = 'website'; mode = 'all'; here = $false; kind = 'git' },
+      [pscustomobject]@{ name = 'notes'; mode = 'all'; here = $false; kind = 'local' },
+      [pscustomobject]@{ name = 'ml-experiments'; mode = 'none'; here = $false; kind = 'git' })
     files = @(
-      (& $fake 'CLAUDE.md (global)' 'settings' 'both' 'theirs'),
-      (& $fake 'settings.json (global)' 'settings' 'theirs' 'theirs'),
-      (& $fake 'recipe-app\CLAUDE.local.md' 'projects' 'mine' 'mine'))
+      (& $fake 'CLAUDE.md (global)' 'instructions' 'both' 'theirs'),
+      (& $fake 'settings.json (global)' 'settings' 'theirs' 'theirs'))
+    groups = [ordered]@{ 'C:\recipe-app' = [pscustomobject]@{ label = 'recipe-app: 3 other files'; choice = 'mine'; project = $proj
+        files = @([pscustomobject]@{ rel = '.env' }, [pscustomobject]@{ rel = 'src\config.ts' }, [pscustomobject]@{ rel = 'data\seed.sql' }) } }
   }
   Show-UnpackMenu $P @{ msg = '' }
   Put '   > ' title
 
-  Write-Host '@@SCREEN Moving in (chats merged for you, nothing here lost)'
-  $script:steps = 'Download your projects', 'Settings, memory and project files', 'Chats and sidebar layout'
+  Write-Host '@@SCREEN Moving in (projects set up, chats merged, nothing here lost)'
+  $script:steps = 'Your projects', 'Settings, instructions and memory', 'Chats and sidebar layout'
   Set-Step 3
   Put '   [x] Claude is closed.' ok
   Put '   [x] Your chats are in.' ok
@@ -1467,11 +1924,12 @@ function Invoke-Preview {   # draws each screen once, without doing anything, to
   $script:steps = $null
   Show-Big -Bloom @(
     '[x] All packed: 42 sessions, 120 chat files, 900 MB.',
+    '[x] Projects: recipe-app (GitHub + local files), website (GitHub + local files), notes (whole folder).',
     'Your transfer folder is on your Desktop:  Claude Moove 2026-01-01 1200',
     'WHAT NOW',
     ' 1. Copy that whole folder to a USB stick (or a cloud drive).',
     " 2. On the new laptop, open it and double-click  2 - UNPACK  (or paste the one line and choose 2)",
-    'Keep that folder private: it holds your full chat history.')
+    'Keep that folder private: it holds your full chat history and your projects'' local files.')
   End-Wait
 }
 
