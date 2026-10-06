@@ -1,0 +1,12 @@
+{
+  "name": "claude-moove",
+  "description": "Claude Moove: carry everything Claude from one Windows laptop to another.",
+  "owner": { "name": "paulgegenyi", "url": "https://github.com/paulgegenyi" },
+  "plugins": [
+    {
+      "name": "moove",
+      "source": "./",
+      "description": "Move your Claude stuff to another Windows laptop, and let Claude merge whatever changed on both."
+    }
+  ]
+}

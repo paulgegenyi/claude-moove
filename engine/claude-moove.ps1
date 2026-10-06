@@ -12,6 +12,13 @@ param(
   [string]$OutDir = '',   # where pack puts the transfer folder (default: the Desktop)
   [ValidateSet('ask', 'send', 'usb')][string]$Transfer = 'ask',   # pack: how the folder gets to the new laptop
   [string]$ReceiveCode = '',   # unpack: the croc code, instead of asking for it
+  [string[]]$What = @(),  # what comes along: chats, settings, memory, projects, sidebar, download (default: all that apply)
+  [string]$From = '',     # unpack: the transfer folder to use, instead of looking for one
+  [string]$Choices = '',  # unpack: JSON file, a choice per file changed on both laptops: mine, theirs, both, or a merged file's path
+  [switch]$Plan,          # unpack: only report what would happen (JSON), with copies of the other laptop's versions; changes nothing
+  [switch]$Yes,           # no questions: take the defaults; never closes Claude or installs anything
+  [switch]$Json,          # quiet: the result comes as one MOOVE-JSON line (for the Claude skill)
+  [switch]$WhenClosed,    # unpack: skip the pick screen, wait for Claude to close, then bring in -What
   [switch]$Test           # unattended test run: never closes Claude, opens pages or installs anything
 )
 $ErrorActionPreference = 'Stop'
@@ -26,6 +33,10 @@ $homepage  = 'https://github.com/paulgegenyi/claude-moove'
 $oneLiner  = 'irm https://raw.githubusercontent.com/paulgegenyi/claude-moove/main/moove.ps1 | iex'
 $script:work = $null
 $script:received = $null
+if ($Plan) { $Json = [switch]$true }
+$What = @($What | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
+$quiet = [bool]$Json                      # no screens, just the result
+$interactive = -not ($Yes -or $Json)      # someone is at the keyboard
 
 # ---------------------------------------------------------------- screen and Clawd
 try { [Console]::OutputEncoding = $utf8 } catch {}
@@ -47,10 +58,11 @@ $fallbackInk = @{ clawd = 'DarkYellow'; title = 'White'; dim = 'DarkGray'; ok = 
 $paint = @{ o = '215;119;87'; d = '58;118;62'; g = '104;172;88'; p = '242;140;184'; w = '246;244;236'; v = '180;144;234'; r = '238;100;100'; b = '122;174;242'; y = '248;208;86'; k = '92;72;96' }
 
 function Put([string]$text, [string]$kind = 'plain', [switch]$n) {
+  if ($quiet) { return }
   if ($vt) { Write-Host "$E[$($ink[$kind])m$text$E[0m" -NoNewline:$n } else { Write-Host $text -ForegroundColor $fallbackInk[$kind] -NoNewline:$n }
 }
-function Gap { Write-Host '' }
-function Clear-Screen { if ($Mode -eq 'preview') { return }; if ($Test) { Write-Host ''; Write-Host ('=' * 40); return }; try { Clear-Host } catch {} }
+function Gap { if (-not $quiet) { Write-Host '' } }
+function Clear-Screen { if ($Mode -eq 'preview' -or $quiet) { return }; if ($Test) { Write-Host ''; Write-Host ('=' * 40); return }; try { Clear-Host } catch {} }
 
 # Clawd as pixels: '#' is body. Legs have two frames so he can walk while you wait.
 $clawdBody = '...############...', '...##.######.##...', '.################.', '...############...'
@@ -192,6 +204,7 @@ function Get-FlowerBar([int]$done, [int]$total) {   # progress as a flower bed: 
 }
 
 function Show-Big([string[]]$lines, [switch]$Bloom) {
+  if ($quiet) { return }
   Clear-Screen
   if ($vt) {
     Write-Canvas (Get-Scene -Bloom:$Bloom) 2
@@ -205,10 +218,11 @@ function Show-Big([string[]]$lines, [switch]$Bloom) {
   foreach ($l in $lines) { if ($l.StartsWith('[x]')) { Put "  $l" ok } elseif ($l.StartsWith('[!]')) { Put "  $l" warn } else { Put "  $l" plain } }
 }
 function Show-Header([int]$frame = 0) {
+  if ($quiet) { return }
   Clear-Screen
   $c = Get-Clawd $frame
   $total = $script:steps.Count; $done = $script:step - 1
-  Put (' ' + $c[0] + '  ') clawd -n; Put 'CLAUDE MOOVE' title -n; Put ('  ' + [char]0xB7 + '  ' + $script:what) dim
+  Put (' ' + $c[0] + '  ') clawd -n; Put 'CLAUDE MOOVE' title -n; Put ('  ' + [char]0xB7 + '  ' + $script:doing) dim
   Put (' ' + $c[1] + '  ') clawd -n; Put "Step $($script:step) of $total  " plain -n; Put $script:steps[$script:step - 1] title
   Put (' ' + $c[2] + '  ') clawd -n; Write-Host (Get-FlowerBar $done $total)
   Gap
@@ -220,9 +234,17 @@ function Show-Header([int]$frame = 0) {
   Gap
 }
 function Set-Step([int]$n) { $script:step = $n; Show-Header }
-function Wait-Enter([string]$text) { Gap; Put "   $text" title; if (-not $Test) { [void][Console]::ReadLine() } }
-function Read-Answer([string]$text) { Gap; Put "   $text" title; if ($Test) { return '' }; ([Console]::ReadLine() + '').Trim().ToUpper() }
-function End-Wait { Gap; Put '   Press any key to close this window.' dim; if (-not $Test) { try { [void][Console]::ReadKey($true) } catch { [void](Read-Host) } } }
+function Read-Line {   # one typed line; test runs read scripted lines when input is redirected, or get an empty answer
+  if (-not $interactive) { return '' }
+  if ($Test) {
+    if ([Console]::IsInputRedirected) { $l = [Console]::In.ReadLine(); if ($null -ne $l) { Write-Host "<< $l"; return $l.Trim() } }
+    return ''
+  }
+  ([Console]::ReadLine() + '').Trim()
+}
+function Wait-Enter([string]$text) { Gap; Put "   $text" title; if ($interactive -and -not $Test) { [void][Console]::ReadLine() } }
+function Read-Answer([string]$text) { Gap; Put "   $text" title; (Read-Line).ToUpper() }
+function End-Wait { Gap; Put '   Press any key to close this window.' dim; if ($interactive -and -not $Test) { try { [void][Console]::ReadKey($true) } catch { [void](Read-Host) } } }
 
 # Runs a tool in the background while Clawd walks and a timer ticks, so a long step never looks frozen.
 function Start-Tool([string]$exe, [string]$argLine) {
@@ -231,22 +253,25 @@ function Start-Tool([string]$exe, [string]$argLine) {
   $null = $p.Handle   # keeps the exit code readable after the process ends
   $p
 }
+function Show-Walk([int]$frame, [string]$text, [datetime]$t0) {   # one frame of Clawd walking, with the status and a timer
+  if ($Test -or $quiet) { return }
+  $canDraw = $false; try { $canDraw = $vt -and ([Console]::CursorTop -lt ([Console]::WindowHeight - 1)) } catch {}
+  if ($canDraw) {
+    $c = Get-Clawd $frame
+    Write-Host -NoNewline ("$E" + '7' + "$E[1;2H$E[$($ink.clawd)m" + $c[0] + "$E[2;2H" + $c[1] + "$E[3;2H" + $c[2] + "$E[0m$E" + '8')
+  }
+  $el = (Get-Date) - $t0
+  Write-Host -NoNewline ("`r   $text  " + ('{0}:{1:00}' -f [int][Math]::Floor($el.TotalMinutes), $el.Seconds) + '      ')
+}
 function Wait-Walking($proc, [scriptblock]$status, [scriptblock]$giveUp) {
   $frame = 0; $t0 = Get-Date
   while (-not $proc.HasExited) {
     if ($giveUp -and (& $giveUp)) { $proc.Kill(); break }
-    $canDraw = $false; try { $canDraw = $vt -and -not $Test -and ([Console]::CursorTop -lt ([Console]::WindowHeight - 1)) } catch {}
-    if ($canDraw) {
-      $c = Get-Clawd $frame
-      Write-Host -NoNewline ("$E" + '7' + "$E[1;2H$E[$($ink.clawd)m" + $c[0] + "$E[2;2H" + $c[1] + "$E[3;2H" + $c[2] + "$E[0m$E" + '8')
-    }
-    $el = (Get-Date) - $t0
-    $text = if ($status) { & $status } else { 'Working...' }
-    if (-not $Test) { Write-Host -NoNewline ("`r   $text  " + ('{0}:{1:00}' -f [int][Math]::Floor($el.TotalMinutes), $el.Seconds) + '      ') }
+    Show-Walk $frame $(if ($status) { & $status } else { 'Working...' }) $t0
     Start-Sleep -Milliseconds 350; $frame = 1 - $frame
   }
   $proc.WaitForExit()
-  if (-not $Test) { Write-Host ("`r" + (' ' * 70) + "`r") -NoNewline }
+  if (-not $Test -and -not $quiet) { Write-Host ("`r" + (' ' * 70) + "`r") -NoNewline }
 }
 function Q([string]$s) { '"' + $s + '"' }
 function Plural([int]$n, [string]$word) { if ($n -eq 1) { "1 $word" } else { "$n ${word}s" } }
@@ -280,17 +305,16 @@ function Invoke-Git([string]$dir) {
   try { $o = & git -C $dir @args 2>$null; if ($LASTEXITCODE -eq 0) { $o } } finally { $ErrorActionPreference = $old }
 }
 function Update-Path { $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User') }
-function Close-Claude {   # returns $true only if Claude is still open (test runs)
-  if (-not (Get-Process -Name claude -ErrorAction SilentlyContinue)) { Put '   [x] Claude is closed.' ok; return $false }
-  Put '   Claude is open. It has to close so nothing changes while I work.' plain
-  Put '   Your chats are saved, nothing gets lost.' dim
-  if ($Test) { Put '   (test run: leaving Claude open)' dim; return $true }
-  Wait-Enter "Press Enter and I'll close Claude for you."
+# Test runs never touch the real Claude: a file in the fake profile stands for "Claude is open", and closing deletes it.
+function Test-ClaudeOpen {
+  if ($Test) { return Test-Path -LiteralPath (Join-Path $claudeDir 'test-claude-open') }
+  [bool](Get-Process -Name claude -ErrorAction SilentlyContinue)
+}
+function Stop-Claude {   # $true once Claude is closed. Chats are saved as you go, so nothing gets lost
+  if ($Test) { Remove-Item -LiteralPath (Join-Path $claudeDir 'test-claude-open') -Force -ErrorAction SilentlyContinue; return $true }
   Get-Process -Name claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-  for ($i = 0; $i -lt 30 -and (Get-Process -Name claude -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Milliseconds 500 }
-  if (Get-Process -Name claude -ErrorAction SilentlyContinue) { throw "Claude wouldn't close. Right-click its icon near the clock, choose Quit, then run this again." }
-  Put '   [x] Claude is closed.' ok
-  return $false
+  for ($i = 0; $i -lt 30 -and (Test-ClaudeOpen); $i++) { Start-Sleep -Milliseconds 500 }
+  -not (Test-ClaudeOpen)
 }
 
 # ---------------------------------------------------------------- sending over the internet (croc)
@@ -301,6 +325,7 @@ function Get-Croc {   # croc's path; installs or upgrades it first (with permiss
   $cmd = Get-Command croc -ErrorAction SilentlyContinue
   if ($cmd) { try { if ([version]((& $cmd.Source --version) -replace '[^0-9.]', '') -ge [version]'10.0') { return $cmd.Source } } catch {} }
   if ($Test) { return $null }
+  if (-not $interactive) { $warnings.Add('Sending needs croc 10 or newer. Install it with  winget install schollz.croc  and try again.'); return $null }
   if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { $warnings.Add("Sending needs croc, and this laptop can't install apps by itself."); return $null }
   Put '   To send over the internet I use croc: a small, free, open-source tool that sends' plain
   Put '   folders end-to-end encrypted, matched by a one-time code.' plain
@@ -356,7 +381,7 @@ function Send-Folder([string]$folder) {   # returns $true once the new laptop ha
   Put '   then choose  2  (move in) and type the code above when it asks.' plain
   Put '   Keep this window open until it says done.' dim
   Put '   The code works once: only type it on your own laptop.' dim
-  if ($Test) { Write-Host "CROC-CODE:$code" }   # lets an unattended test pick the code up
+  if ($Test -or $Json) { Write-Host "MOOVE-CODE:$code" }   # for the Claude skill and unattended tests
   Gap
   Wait-Walking $p { $pc = Get-Percent (Read-Log $log); if ($pc) { "Sending...  $pc" } else { 'Waiting for the new laptop to type the code...' } }
   $ok = $p.ExitCode -eq 0
@@ -380,9 +405,8 @@ function Find-PackedFolders {   # packed folders on this PC or a plugged-in driv
   }
   @($hits | Sort-Object LastWriteTime -Descending)
 }
-function Read-Code { Gap; Put '   Code (or just press Enter to stop):' title; if ($Test) { return '' }; ([Console]::ReadLine() + '').Trim() }
+function Read-Code { Gap; Put '   Code (or just press Enter to stop):' title; Read-Line }
 function Receive-Folder {   # asks for the old laptop's code and receives its folder; returns that folder's path
-  Put "   I couldn't find a packed folder on this PC or a plugged-in drive." plain
   Put '   If your old laptop is sending it over the internet, type the code it shows.' plain
   for ($try = 1; $try -le 3; $try++) {
     $c = if ($ReceiveCode) { $ReceiveCode } else { Read-Code }
@@ -414,22 +438,63 @@ function Receive-Folder {   # asks for the old laptop's code and receives its fo
   throw "Couldn't receive anything from the old laptop. Run PACK there again for a fresh code, or carry the folder on a USB stick."
 }
 
-# ---------------------------------------------------------------- PACK (laptop you're leaving)
-function Invoke-Pack([switch]$FromMenu) {
-  $script:what = 'packing up this laptop'
-  $script:steps = 'Close Claude', 'Check your projects', 'Copy your Claude stuff', 'Zip it up', 'Make your transfer folder', 'Send it to the new laptop'
-  if (-not $FromMenu) {
-    Show-Big @(
-      'This packs ALL your Claude stuff into one folder you can carry to your next laptop:',
-      'every chat and session, your global CLAUDE.md, settings, hooks, skills, plugins and memory.',
-      'It takes about 5 minutes.')
-    Wait-Enter 'Press Enter to start.'
+# ---------------------------------------------------------------- what can come along
+$labels = [ordered]@{ chats = 'Chats and sessions'; settings = 'Settings and instructions'; memory = 'Memory'; projects = 'Project Claude files'; sidebar = 'Sidebar layout'; download = 'Download missing projects' }
+$skipDirs  = 'cache', 'shell-snapshots', 'session-env', 'sessions', 'telemetry', 'daemon', 'downloads'
+$skipFiles = '.credentials.json', 'daemon.lock', 'daemon.log', 'daemon.status.json', '.last-cleanup', '.last-update-result.json'
+$chatDirs  = 'projects', 'file-history', 'todos', 'plans', 'uploads'   # in ~/.claude; projects also holds memory
+$appChats  = 'claude-code-sessions', 'local-agent-mode-sessions', 'scratch-workspaces'
+$rootFiles = 'CLAUDE.md', 'CLAUDE.local.md', 'AGENTS.md'   # project files that get "keep both, Claude merges" by default
+
+function Show-Top([string]$subtitle) {   # small Clawd header for the pick screens
+  if ($quiet) { return }
+  Clear-Screen
+  $c = Get-Clawd
+  Put (' ' + $c[0] + '  ') clawd -n; Put 'CLAUDE MOOVE' title -n; Put ('  ' + [char]0xB7 + '  ' + $script:doing) dim
+  Put (' ' + $c[1] + '  ') clawd -n; Put $subtitle plain
+  Put (' ' + $c[2] + '  ') clawd -n; Write-Host (Get-FlowerBar 4 4)
+  Gap
+}
+function Get-Lower([string]$key) { $l = $labels[$key]; $l.Substring(0, 1).ToLower() + $l.Substring(1) }   # "project Claude files"
+function Write-Item([int]$n, $it, [string]$lock) {
+  $on = $it.on -and -not $lock
+  $line = '   {0,2}  {1} {2,-27} {3}' -f $n, $(if ($on) { '[x]' } else { '[ ]' }), $labels[$it.key], $(if ($lock) { $lock } else { $it.detail })
+  Put $line $(if ($on) { 'plain' } else { 'dim' })
+}
+function Read-Choice { Gap; Put '   > ' title -n; Read-Line }
+function Write-Result($obj) { if ($Json) { Write-Host ('MOOVE-JSON:' + ($obj | ConvertTo-Json -Compress -Depth 8)) } }
+function Install-Tool([string]$which) {   # Node.js or Git, with Windows' own app installer when it's there
+  $t = if ($which -eq 'node') { @{ name = 'Node.js'; cmd = 'node'; id = 'OpenJS.NodeJS.LTS'; url = 'https://nodejs.org/en/download' } } else { @{ name = 'Git'; cmd = 'git'; id = 'Git.Git'; url = 'https://git-scm.com/download/win' } }
+  if ($Test) { return }
+  if (Get-Command winget -ErrorAction SilentlyContinue) {
+    Put "   Installing $($t.name) (this accepts its licence)..." plain
+    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    & winget install --id $t.id -e --silent --accept-package-agreements --accept-source-agreements
+    $ErrorActionPreference = $old
+  } else {
+    Start-Process $t.url
+    Wait-Enter "Install $($t.name) from the page that just opened, then press Enter."
   }
+  Update-Path
+}
 
-  Set-Step 1
-  $claudeOpen = Close-Claude
-
-  Set-Step 2
+function Get-ProjectClaudeFiles([string]$root, [bool]$isGit) {   # project Claude files GitHub doesn't have (all of them outside git)
+  $root = $root.TrimEnd('\')
+  $cands = @(foreach ($n in $rootFiles) { if (Test-Path -LiteralPath (Join-Path $root $n) -PathType Leaf) { $n } })
+  foreach ($d in Get-ChildItem -LiteralPath (Join-Path $root '.claude') -Force -ErrorAction SilentlyContinue) {
+    if ($d.PSIsContainer -and $d.Name -eq 'worktrees') { continue }   # agent worktrees are whole copies of the project
+    $files = if ($d.PSIsContainer) { Get-ChildItem -LiteralPath $d.FullName -Recurse -File -Force -ErrorAction SilentlyContinue } else { $d }
+    foreach ($f in $files) { if ($f.Length -lt 5MB) { $cands += $f.FullName.Substring($root.Length + 1) } }
+  }
+  if (-not $isGit -or -not $cands.Count) { return $cands }
+  $spec = @($rootFiles) + '.claude' + ':(exclude).claude/worktrees'
+  $notOnGit = @{}
+  foreach ($l in @(Invoke-Git $root ls-files --others --exclude-standard @spec) + @(Invoke-Git $root ls-files --others --ignored --exclude-standard @spec) + @(Invoke-Git $root ls-files --modified @spec)) {
+    if ($l) { $notOnGit[$l.Replace('/', '\')] = $true }
+  }
+  @($cands | Where-Object { $notOnGit.ContainsKey($_) })
+}
+function Get-Projects {   # the project folders this laptop's sessions use: GitHub link, unsaved work, Claude files GitHub lacks
   $metas = @(Get-ChildItem -LiteralPath "$claudeDir\claude-code-sessions" -Recurse -File -Filter 'local_*.json' -ErrorAction SilentlyContinue)
   $cwds = $metas | ForEach-Object { (Read-Json $_.FullName).cwd } | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Sort-Object -Unique
   $hasGit = [bool](Get-Command git -ErrorAction SilentlyContinue)
@@ -439,46 +504,124 @@ function Invoke-Pack([switch]$FromMenu) {
     $top = if ($hasGit) { Invoke-Git $cwd rev-parse --show-toplevel | Select-Object -First 1 }
     $root = if ($top) { $top.Replace('/', '\') } else { $cwd }
     if ($projects.Contains($root)) { continue }
-    $info = [ordered]@{ path = $root; remote = $null; unsaved = 0 }
+    $info = [ordered]@{ path = $root; remote = $null; unsaved = 0; claudeFiles = @(Get-ProjectClaudeFiles $root ([bool]$top)) }
     if ($top) {
       $info.remote = Invoke-Git $root remote get-url origin | Select-Object -First 1
       $info.unsaved = @(Invoke-Git $root status --porcelain).Count + @(Invoke-Git $root log --branches --not --remotes --oneline).Count
     }
     $projects[$root] = $info
   }
-  $risky = @($projects.Values | Where-Object { $_.unsaved -gt 0 })
-  Put "   [x] Your sessions use $($projects.Count) project folders." ok
-  if ($risky.Count) {
-    Gap
-    Put '   Heads up: these have work that is NOT on GitHub yet:' warn
-    foreach ($p in $risky) { Put ('      ' + (Split-Path $p.path -Leaf) + '  (' + (Plural $p.unsaved 'unsaved change') + ')') warn }
-    Put '   That work only comes along if you copy the project folder itself to the new laptop,' dim
-    Put '   or commit and push it first (Claude can do that for you).' dim
-    Wait-Enter 'Press Enter to keep going.'
-  }
-
-  Set-Step 3
-  $work = New-WorkDir; $script:work = $work
+  $projects
+}
+function Copy-Selected($want, [string]$work, $projects) {   # copies only the ticked kinds of data into the work folder
   $sh = Join-Path $work 'home'; $sa = Join-Path $work 'appdata\Claude'; $c = Join-Path $HomeDir '.claude'
-  # ~/.claude without caches, live-process files, telemetry and the login token (you sign in again on the new laptop)
-  $skipDirs = 'cache', 'shell-snapshots', 'session-env', 'sessions', 'telemetry', 'daemon', 'downloads'
-  $skipFiles = '.credentials.json', 'daemon.lock', 'daemon.log', 'daemon.status.json', '.last-cleanup', '.last-update-result.json'
-  Copy-Tree $c "$sh\.claude" 'Copying chats, settings, hooks, skills and memory...' (
-    @('/XD') + ($skipDirs | ForEach-Object { Q "$c\$_" }) + @('/XF') + ($skipFiles | ForEach-Object { Q "$c\$_" }) + @('claude-data.zip'))
-  foreach ($f in '.claude.json', 'AGENTS.md') { Copy-One (Join-Path $HomeDir $f) $sh }
-  foreach ($d in 'claude-code-sessions', 'local-agent-mode-sessions', 'scratch-workspaces') {
-    Copy-Tree "$claudeDir\$d" "$sa\$d" "Copying the app's session list..." @('/XF', 'claude-data.zip')
+  if ($want.settings) {   # everything in ~/.claude except chats, memory, caches and the login token
+    Copy-Tree $c "$sh\.claude" 'Copying settings, hooks, skills and plugins...' (
+      @('/XD') + (($skipDirs + $chatDirs) | ForEach-Object { Q "$c\$_" }) + @('/XF') + (($skipFiles + 'history.jsonl') | ForEach-Object { Q "$c\$_" }) + @('claude-data.zip'))
+    foreach ($f in '.claude.json', 'AGENTS.md') { Copy-One (Join-Path $HomeDir $f) $sh }
+    Copy-One "$claudeDir\claude_desktop_config.json" $sa
   }
-  if (-not $claudeOpen) { Copy-Tree "$claudeDir\Local Storage" "$sa\Local Storage" 'Copying your sidebar layout...' }
-  foreach ($f in 'claude_desktop_config.json', 'git-worktrees.json') { Copy-One "$claudeDir\$f" $sa }
-  $transcripts = 0
+  if ($want.chats) {
+    Copy-Tree "$c\projects" "$sh\.claude\projects" 'Copying your chats...' @('/XD', 'memory')
+    foreach ($d in $chatDirs | Where-Object { $_ -ne 'projects' }) { Copy-Tree "$c\$d" "$sh\.claude\$d" 'Copying your chats...' }
+    Copy-One "$c\history.jsonl" "$sh\.claude"
+    foreach ($d in $appChats) { Copy-Tree "$claudeDir\$d" "$sa\$d" "Copying the app's session list..." @('/XF', 'claude-data.zip') }
+    Copy-One "$claudeDir\git-worktrees.json" $sa
+  }
+  if ($want.memory) {
+    foreach ($d in Get-ChildItem -LiteralPath "$c\projects" -Directory -ErrorAction SilentlyContinue) {
+      if (Test-Path -LiteralPath "$($d.FullName)\memory") { Copy-Tree "$($d.FullName)\memory" "$sh\.claude\projects\$($d.Name)\memory" 'Copying memory...' }
+    }
+  }
+  if ($want.sidebar) { Copy-Tree "$claudeDir\Local Storage" "$sa\Local Storage" 'Copying your sidebar layout...' }
+  if ($want.projects) {
+    $n = 0
+    foreach ($p in $projects.Values) {
+      $n++; $p.slot = $n
+      foreach ($rel in $p.claudeFiles) {
+        $to = Join-Path "$work\projects\$n" $rel
+        New-Item -ItemType Directory -Force (Split-Path $to) | Out-Null
+        Copy-Item -LiteralPath (Join-Path $p.path $rel) $to -Force
+      }
+    }
+  }
+}
+
+# ---------------------------------------------------------------- PACK (laptop you're leaving)
+function Show-PackMenu($items, $state, $risky) {
+  Show-Top 'Pick what comes along, then press Enter.'
+  Put '   What comes along' title
+  $n = 0
+  foreach ($it in $items) { $n++; Write-Item $n $it $(if ($it.key -eq 'sidebar' -and $state.open) { 'needs Claude closed (press C)' }) }
+  Gap
+  if ($state.open) { Put "   Claude is open. That's fine: everything except the sidebar layout can go now." plain; Put '    C  close Claude first, to bring the sidebar layout too' dim }
+  else { Put '   [x] Claude is closed, so everything can come along.' ok }
+  Gap
+  Put '   How it gets to the new laptop' title
+  Put ('    S  ' + $(if ($state.how -eq 'send') { '(o)' } else { '( )' }) + ' send it over the internet with a one-time code (the new laptop must be on)') $(if ($state.how -eq 'send') { 'plain' } else { 'dim' })
+  Put ('    U  ' + $(if ($state.how -eq 'usb') { '(o)' } else { '( )' }) + ' carry it on a pendrive or USB stick') $(if ($state.how -eq 'usb') { 'plain' } else { 'dim' })
+  if (@($risky).Count) {
+    Gap
+    Put ('   Heads up, not on GitHub yet: ' + ((@($risky) | ForEach-Object { (Split-Path $_.path -Leaf) + ' (' + (Plural $_.unsaved 'change') + ')' }) -join ', ')) warn
+    Put '   Commit and push them first, or copy those folders yourself.' dim
+  }
+  if ($state.msg) { Gap; Put "   $($state.msg)" warn; $state.msg = '' }
+  Gap
+  Put '   Type a number or letter and press Enter to change something. Just Enter starts, Q quits.' dim
+}
+
+function Invoke-Pack([switch]$FromMenu) {
+  $script:doing = 'packing up this laptop'; $script:steps = $null
+  Show-Top 'Looking around...'
+  $c = Join-Path $HomeDir '.claude'
+  $metas = @(Get-ChildItem -LiteralPath "$claudeDir\claude-code-sessions" -Recurse -File -Filter 'local_*.json' -ErrorAction SilentlyContinue)
+  $transcripts = 0; $memories = 0
   foreach ($d in Get-ChildItem -LiteralPath "$c\projects" -Directory -ErrorAction SilentlyContinue) {
     $transcripts += @(Get-ChildItem -LiteralPath $d.FullName -File -Filter *.jsonl -ErrorAction SilentlyContinue).Count
+    if (Test-Path -LiteralPath "$($d.FullName)\memory") { $memories++ }
   }
-  Put "   [x] Copied $($metas.Count) sessions and $transcripts chat files." ok
-  if ($claudeOpen) { Put '   (Claude was open, so the sidebar layout was skipped.)' dim }
+  $projects = Get-Projects
+  $pfiles = 0; $pwith = 0; foreach ($p in $projects.Values) { if ($p.claudeFiles.Count) { $pfiles += $p.claudeFiles.Count; $pwith++ } }
+  $state = @{ open = (Test-ClaudeOpen); how = $(if ($Transfer -ne 'ask') { $Transfer } elseif ($interactive -and -not $Test) { 'send' } else { 'usb' }); msg = '' }
+  $items = @(
+    [ordered]@{ key = 'chats'; on = $true; detail = "$(Plural $metas.Count 'session'), $(Plural $transcripts 'chat')" },
+    [ordered]@{ key = 'settings'; on = $true; detail = 'CLAUDE.md, settings, hooks, skills, plugins' },
+    [ordered]@{ key = 'memory'; on = ($memories -gt 0); detail = $(if ($memories) { "notes Claude keeps, in $(Plural $memories 'project')" } else { 'none yet' }) },
+    [ordered]@{ key = 'projects'; on = ($pfiles -gt 0); detail = $(if ($pfiles) { "$(Plural $pfiles 'file') GitHub doesn't have, in $(Plural $pwith 'project')" } else { 'none found' }) },
+    [ordered]@{ key = 'sidebar'; on = $true; detail = 'how your sidebar is organised' })
+  if ($What.Count) { foreach ($it in $items) { $it.on = $What -contains $it.key } }
+  $risky = @($projects.Values | Where-Object { $_.unsaved -gt 0 })
 
-  Set-Step 4
+  while ($interactive) {
+    $state.open = Test-ClaudeOpen   # the user may quit Claude themselves
+    Show-PackMenu $items $state $risky
+    $a = Read-Choice
+    if ($a -eq '') { break }
+    if ($a -eq 'Q') { Put '   Nothing was changed.' dim; End-Wait; return }
+    if ($a -match '^\d+$' -and [int]$a -ge 1 -and [int]$a -le $items.Count) {
+      $it = $items[[int]$a - 1]
+      if ($it.key -eq 'sidebar' -and $state.open) { $state.msg = 'Close Claude first (C) to bring the sidebar layout.' } else { $it.on = -not $it.on }
+    }
+    elseif ($a -eq 'C' -and $state.open) { if (Stop-Claude) { $state.open = $false } else { $state.msg = "Claude didn't close. Quit it from its icon near the clock, then press C again." } }
+    elseif ($a -eq 'S') { $state.how = 'send' }
+    elseif ($a -eq 'U') { $state.how = 'usb' }
+    else { $state.msg = "I didn't get that one." }
+  }
+  $want = @{}; foreach ($it in $items) { $want[$it.key] = [bool]$it.on }
+  $state.open = Test-ClaudeOpen
+  if ($state.open) { $want.sidebar = $false }   # its database is locked while Claude runs
+  if (-not ($want.Values -contains $true)) { throw 'Nothing was ticked, so there is nothing to pack.' }
+
+  $script:steps = @('Copy your Claude stuff', 'Zip it up', 'Make your transfer folder')
+  if ($state.how -eq 'send') { $script:steps += 'Send it to the new laptop' }
+  Set-Step 1
+  $work = New-WorkDir; $script:work = $work
+  Copy-Selected $want $work $projects
+  $took = @($items | Where-Object { $want[$_.key] } | ForEach-Object { Get-Lower $_.key })
+  Put ('   [x] Copied: ' + ($took -join ', ') + '.') ok
+  if ($state.open -and ($items | Where-Object { $_.key -eq 'sidebar' -and $_.on })) { Put '   (Claude is open, so the sidebar layout stays behind. Close Claude and pack again if you want it.)' dim }
+
+  Set-Step 2
   $dest = Join-Path $(if ($OutDir) { $OutDir } else { $DesktopDir }) "Claude Moove $stamp"
   New-Item -ItemType Directory -Force (Join-Path $dest 'engine') | Out-Null
   $zip = Join-Path $dest 'engine\claude-data.zip'
@@ -488,37 +631,31 @@ function Invoke-Pack([switch]$FromMenu) {
   $mb = [int]((Get-Item -LiteralPath $zip).Length / 1MB)
   Put "   [x] Zipped: $mb MB." ok
 
-  Set-Step 5
+  Set-Step 3
   # The buttons travel too: on a pendrive they're plain local files, so Windows doesn't flag them on the new laptop.
   Get-ChildItem -LiteralPath $toolRoot -Filter '*.cmd' | Copy-Item -Destination $dest
   Copy-One (Join-Path $toolRoot 'LICENSE') $dest
   foreach ($f in 'claude-moove.ps1', 'claude-moove-merge.mjs', 'README.md') { Copy-Item -LiteralPath (Join-Path $engine $f) (Join-Path $dest "engine\$f") }
   $manifest = [ordered]@{
-    tool = 'Claude Moove'; version = 1; created = (Get-Date).ToString('o'); computer = $env:COMPUTERNAME
+    tool = 'Claude Moove'; version = 2; created = (Get-Date).ToString('o'); computer = $env:COMPUTERNAME
     home = $HomeDir; appData = $AppDataDir; desktop = $DesktopDir; documents = $DocumentsDir
     accounts = @(Get-ChildItem -LiteralPath "$claudeDir\claude-code-sessions" -Directory -ErrorAction SilentlyContinue | ForEach-Object Name)
-    sessions = $metas.Count; transcripts = $transcripts; projects = @($projects.Values)
+    sessions = $metas.Count; transcripts = $transcripts; what = @($items | Where-Object { $want[$_.key] } | ForEach-Object { $_.key })
+    projects = @($projects.Values)
   }
   [IO.File]::WriteAllText((Join-Path $dest 'engine\manifest.json'), ($manifest | ConvertTo-Json -Depth 6), $utf8)
-  [IO.File]::WriteAllText($marker, ([ordered]@{ lastPack = (Get-Date).ToString('o') } | ConvertTo-Json), $utf8)
+  Update-Marker @{ lastPack = (Get-Date).ToString('o') }
   Remove-Tree $work; $script:work = $null
   Put '   [x] Transfer folder ready.' ok
 
-  Set-Step 6
-  $how = $Transfer
-  if ($how -eq 'ask') {
-    if ($Test) { $how = 'usb' }
-    else {
-      Put '   How should it get to the new laptop?' plain
-      Put '     Enter   send it over the internet now, with a one-time code (the new laptop must be on)' plain
-      Put "     U       I'll carry the folder on a USB stick or drive" plain
-      $how = if ((Read-Answer 'Your choice:') -eq 'U') { 'usb' } else { 'send' }
-    }
+  $sent = $false
+  if ($state.how -eq 'send') {
+    Set-Step 4
+    $sent = Send-Folder $dest
+    if ($sent) { Put '   [x] Sent! The new laptop has everything.' ok }
   }
-  $sent = ($how -eq 'send') -and (Send-Folder $dest)
-  if ($sent) { Put '   [x] Sent! The new laptop has everything.' ok } else { Put '   [x] Ready to carry.' ok }
 
-  $done = @("[x] All packed: $($metas.Count) sessions, $transcripts chat files, $mb MB.", '')
+  $done = @($(if ($want.chats) { "[x] All packed: $(Plural $metas.Count 'session'), $(Plural $transcripts 'chat file'), $mb MB." } else { "[x] All packed: $($took -join ', '), $mb MB." }), '')
   if ($sent) {
     $done += '[x] Sent to the new laptop. It carries on there by itself.', '',
       "A copy stays on your Desktop as  Claude Moove $stamp  in case you need it again.",
@@ -533,7 +670,9 @@ function Invoke-Pack([switch]$FromMenu) {
   }
   foreach ($w in $warnings) { $done += "[!] $w" }
   Show-Big -Bloom $done
-  if (-not $Test -and -not $sent) { Start-Process explorer.exe "/select,`"$dest`"" }
+  $skipped = @($items | Where-Object { $_.on -and -not $want[$_.key] } | ForEach-Object { $_.key })   # the sidebar, when Claude was open
+  Write-Result ([ordered]@{ ok = $true; folder = $dest; mb = $mb; sessions = $metas.Count; chats = $transcripts; what = $manifest.what; skipped = $skipped; sent = $sent; warnings = @($warnings) })
+  if ($interactive -and -not $Test -and -not $sent) { Start-Process explorer.exe "/select,`"$dest`"" }
   End-Wait
 }
 
@@ -571,7 +710,7 @@ function Convert-StageFiles([string]$sh, [string]$sa) {
   $files = New-Object System.Collections.Generic.List[IO.FileInfo]
   $sources = @(
     @($sh, $false), @("$sh\.claude", $false), @("$sh\.claude\plugins", $false), @("$sh\.claude\claude-moove", $false), @($sa, $false),
-    @("$sa\claude-code-sessions", $true), @("$sa\local-agent-mode-sessions", $true))
+    @("$sa\claude-code-sessions", $true), @("$sa\local-agent-mode-sessions", $true), @((Join-Path (Split-Path $sh) 'projects'), $true))
   foreach ($src in $sources) {
     try {
       foreach ($f in Get-ChildItem -LiteralPath $src[0] -File -Force -Recurse:$src[1] -ErrorAction SilentlyContinue) {
@@ -689,95 +828,295 @@ function Merge-Sessions([string]$sa) {
 }
 
 # ---------------------------------------------------------------- UNPACK (laptop you're moving to)
-function Invoke-Unpack([switch]$FromMenu) {
-  $script:what = 'moving in on this laptop'
-  $script:steps = 'Find your packed stuff', 'Claude app installed', 'Signed in to the same account', 'Close Claude', 'Unpack and merge your chats', 'Node.js and Git', 'Your project folders'
-  if (-not $FromMenu) {
-    Show-Big @(
-      'This moves all your Claude stuff onto THIS laptop: every chat and session, your global',
-      'CLAUDE.md, settings, hooks, skills, plugins and memory. Nothing already here gets lost.',
-      'It takes about 5 minutes, and I check everything as we go.')
-    Wait-Enter 'Press Enter to start.'
+$liveNames = '.claude.json', 'claude_desktop_config.json'   # Claude keeps rewriting these while it runs, so they wait until it's closed
+
+function Get-AccountState($mf) {   # same, different, none (not signed in) or noapp (the app isn't installed or never opened)
+  $cfg = Join-Path $claudeDir 'config.json'
+  if (-not (Test-Path -LiteralPath $cfg)) { return 'noapp' }
+  $acct = (Read-Json $cfg).lastKnownAccountUuid
+  if (-not $acct) { 'none' } elseif ((@($mf.accounts) -contains $acct) -or -not @($mf.accounts).Count) { 'same' } else { 'different' }
+}
+function Read-Marker {   # files settled in earlier moves, so the same difference isn't asked about twice
+  $r = @{}
+  try { $m = Read-Json $marker; if ($m.resolved) { foreach ($p in $m.resolved.PSObject.Properties) { $r[$p.Name] = $p.Value } } } catch {}
+  $r
+}
+function Update-Marker([hashtable]$set) {   # notes that this laptop packed or moved in, keeping what's already noted
+  $all = [ordered]@{}
+  try { foreach ($p in (Read-Json $marker).PSObject.Properties) { $all[$p.Name] = $p.Value } } catch {}
+  foreach ($k in $set.Keys) { $all[$k] = $set[$k] }
+  New-Item -ItemType Directory -Force $claudeDir | Out-Null
+  [IO.File]::WriteAllText($marker, ($all | ConvertTo-Json -Depth 5), $utf8)
+}
+function Find-Source {   # the transfer folder: -From, next to this engine, on this PC or a drive, or received with a code
+  if ($From) {
+    $f = [IO.Path]::GetFullPath($From).TrimEnd('\')
+    foreach ($d in $f, (Split-Path $f)) { if ($d -and (Test-Path -LiteralPath (Join-Path $d 'engine\claude-data.zip'))) { return $d } }
+    throw "There's no packed Claude data in $From."
   }
+  if ((Test-Path -LiteralPath (Join-Path $engine 'claude-data.zip')) -and (Test-Path -LiteralPath (Join-Path $engine 'manifest.json'))) { return $toolRoot }
+  if (-not $ReceiveCode) { $cand = @(Find-PackedFolders); if ($cand.Count) { return $cand[0].FullName } }
+  if (-not $interactive -and -not $ReceiveCode) { throw "Couldn't find a packed folder on this PC or a plugged-in drive. Name one with -From, or receive one with -ReceiveCode." }
+  Put "   I couldn't find a packed folder on this PC or a plugged-in drive." plain
+  Receive-Folder
+}
 
-  Set-Step 1
-  $zip = Join-Path $engine 'claude-data.zip'; $mf = Join-Path $engine 'manifest.json'
-  if (-not (Test-Path -LiteralPath $zip) -or -not (Test-Path -LiteralPath $mf)) {
-    $got = $null
-    if (-not $ReceiveCode) {   # a folder carried over on a stick or downloaded: find it by itself
-      $cand = @(Find-PackedFolders)
-      if ($cand.Count) {
-        $m0 = Read-Json (Join-Path $cand[0].FullName 'engine\manifest.json')
-        Put ('   Found your packed stuff:  ' + $cand[0].FullName) plain
-        Put ('   (packed on ' + $m0.computer + ' at ' + ([datetime]$m0.created).ToString('yyyy-MM-dd HH:mm') + ", $($m0.sessions) sessions)") dim
-        if ((Read-Answer 'Press Enter to use it, or type C and Enter to receive one over the internet instead.') -ne 'C') { $got = $cand[0].FullName }
-      }
-    }
-    if (-not $got) { $got = Receive-Folder }   # nothing carried over: receive it over the internet instead
-    $zip = Join-Path $got 'engine\claude-data.zip'; $mf = Join-Path $got 'engine\manifest.json'
-  }
-  $manifest = Read-Json $mf
-  Put ('   [x] Packed on ' + $manifest.computer + ' at ' + ([datetime]$manifest.created).ToString('yyyy-MM-dd HH:mm') + ": $($manifest.sessions) sessions.") ok
+# Files people care about (global CLAUDE.md, AGENTS.md, settings.json and project Claude files) are compared one by one.
+# When both laptops changed one, nothing is overwritten blindly: keep this PC's, take the old laptop's, or keep both.
+function New-FileItem([string]$in, [string]$dest, [string]$label, [string]$cat, $proj, [string]$rel) {
+  # "keep both" leaves the other copy next to it, so only where a spare copy does nothing: instruction files and .json
+  $bothOk = ($cat -eq 'settings') -or $dest.EndsWith('.json') -or (($cat -eq 'projects') -and ($rootFiles -contains $rel))
+  [pscustomobject]@{ id = $dest; label = $label; incoming = $in; dest = $dest; cat = $cat; project = $proj; rel = $rel; bothOk = $bothOk
+    state = ''; hash = ''; newer = ''; default = ''; choice = '' }
+}
+function Test-Pristine($f) {   # this PC's copy of a project file is just what's committed to git
+  if (-not $script:hasGit) { return $false }
+  $r = $f.rel.Replace('\', '/')
+  [bool](Invoke-Git $f.project.path ls-files $r) -and -not (Invoke-Git $f.project.path status --porcelain $r)
+}
+function Update-FileState($f) {   # copy (not here yet), same, settled (in an earlier move) or conflict (changed on both laptops)
+  $f.state = 'copy'
+  if (-not (Test-Path -LiteralPath $f.dest)) { return }
+  $f.hash = (Get-FileHash -LiteralPath $f.incoming).Hash
+  if ((Get-FileHash -LiteralPath $f.dest).Hash -eq $f.hash) { $f.state = 'same'; return }
+  if ($script:resolved[$f.dest] -eq $f.hash) { $f.state = 'settled'; return }
+  $f.state = 'conflict'
+  $f.newer = if ((Get-Item -LiteralPath $f.incoming -Force).LastWriteTimeUtc -gt (Get-Item -LiteralPath $f.dest -Force).LastWriteTimeUtc) { 'theirs' } else { 'mine' }
+  # A brand-new install's copy, or one that's just what GitHub has, gives way. Instructions are kept both; the rest goes newer-wins.
+  if ($script:firstMoove -or ($f.project -and (Test-Pristine $f))) { $f.default = 'theirs' }
+  elseif ($f.bothOk -and $f.dest.EndsWith('.md')) { $f.default = 'both' }
+  else { $f.default = $f.newer }
+  if (-not $f.choice) { $f.choice = $f.default }
+}
 
-  Set-Step 2
-  while (-not (Test-Path -LiteralPath (Join-Path $claudeDir 'config.json'))) {
-    Put "   Claude isn't installed on this laptop yet (or hasn't been opened once)." warn
-    Put '     1. Press Enter and I open the download page for you.' plain
-    Put '     2. Install Claude, open it and sign in.' plain
-    Put '     3. Come back to this window and press Enter.' plain
-    if ($Test) { throw 'Claude is not installed (test run).' }
-    Wait-Enter 'Press Enter to open the download page.'
-    Start-Process 'https://claude.ai/download'
-    Wait-Enter 'Claude installed and you are signed in? Press Enter.'
-    Set-Step 2
-  }
-  Put '   [x] Claude is installed.' ok
-
-  Set-Step 3
-  while ($true) {
-    $acct = (Read-Json (Join-Path $claudeDir 'config.json')).lastKnownAccountUuid
-    if ($acct -and ((@($manifest.accounts) -contains $acct) -or -not @($manifest.accounts).Count)) { Put '   [x] Signed in to the same account as your old laptop.' ok; break }
-    if (-not $acct) {
-      Put "   You're not signed in to Claude yet." warn
-      Put '   Open Claude and sign in with the same account you used on your old laptop.' plain
-      if ($Test) { throw 'Not signed in (test run).' }
-      Wait-Enter 'Signed in? Press Enter.'
-    } else {
-      Put "   You're signed in to a DIFFERENT Claude account than on your old laptop." warn
-      Put '   Your chats belong to the old account and only show up when you use that one.' plain
-      Put '   Switch accounts in Claude, then press Enter. (Or type C and press Enter to carry on anyway.)' plain
-      if ($Test -or (Read-Answer 'Your choice:') -eq 'C') { break }
-    }
-    Set-Step 3
-  }
-
-  Set-Step 4
-  [void](Close-Claude)
-
-  Set-Step 5
+function Get-UnpackPlan([string]$src) {   # unpacks the data next to this PC's, then works out what can come in and what differs
+  Remove-Tree $script:work
+  $mf = Read-Json (Join-Path $src 'engine\manifest.json')
   $work = New-WorkDir; $script:work = $work
-  $p = Start-Tool tar ('-x -f ' + (Q $zip) + ' -C ' + (Q $work))
+  $p = Start-Tool tar ('-x -f ' + (Q (Join-Path $src 'engine\claude-data.zip')) + ' -C ' + (Q $work))
   Wait-Walking $p { 'Unpacking...' }
   if ($p.ExitCode -ne 0) { throw "Couldn't unpack claude-data.zip (tar code $($p.ExitCode)). It may be damaged: copy the folder over again." }
   $sh = Join-Path $work 'home'; $sa = Join-Path $work 'appdata\Claude'
-  # A brand-new install takes the packed settings and sidebar layout as they are. A PC that already has its own
-  # Claude chats is only ever merged into: settings go newer-wins one by one, and its own sidebar layout stays.
-  $hasSessions = [bool](Get-ChildItem -LiteralPath "$claudeDir\claude-code-sessions" -Recurse -File -Filter 'local_*.json' -ErrorAction SilentlyContinue | Select-Object -First 1)
-  $hasChats = [bool](Get-ChildItem -LiteralPath "$HomeDir\.claude\projects" -Directory -ErrorAction SilentlyContinue |
-      Where-Object { Get-ChildItem -LiteralPath $_.FullName -File -Filter *.jsonl -ErrorAction SilentlyContinue | Select-Object -First 1 } | Select-Object -First 1)
-  $livedIn = $hasSessions -or $hasChats
-  $firstMoove = -not $livedIn -and -not (Test-Path -LiteralPath $marker)
-  if ($livedIn) { Put '   [x] This PC already has its own Claude chats: merging into them, nothing here gets deleted.' ok }
+  $pairs = @(Set-PathMap $mf)
+  if ($pairs.Count) { Convert-StageFiles $sh $sa }
+  # A PC with chats of its own is only ever merged into. One chat doesn't count: it may be the one running the Claude Moove skill.
+  $chatsHere = @(Get-ChildItem -LiteralPath "$HomeDir\.claude\projects" -Directory -ErrorAction SilentlyContinue |
+      ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -File -Filter *.jsonl -ErrorAction SilentlyContinue } | Select-Object -First 2).Count
+  $sessionsHere = @(Get-ChildItem -LiteralPath "$claudeDir\claude-code-sessions" -Recurse -File -Filter 'local_*.json' -ErrorAction SilentlyContinue | Select-Object -First 2).Count
+  $livedIn = ($chatsHere -gt 1) -or ($sessionsHere -gt 1)
+  $mk = $null; try { $mk = Read-Json $marker } catch {}
+  # A brand-new install takes everything as it was, also in a second run that brings in what waited for Claude to close.
+  $script:firstMoove = -not $livedIn -and (-not $mk -or $mk.freshInstall)
+  $script:resolved = Read-Marker
+  $script:hasGit = [bool](Get-Command git -ErrorAction SilentlyContinue)
+  $packed = if ($mf.what) { @($mf.what) } else { @('chats', 'settings', 'memory', 'sidebar') }   # packs from before 1.1 hold all but project files
+  $projects = @(foreach ($pr in @($mf.projects)) {
+      if ($pr) { [pscustomobject]@{ name = (Split-Path $pr.path -Leaf); path = (Convert-Text $pr.path); remote = $pr.remote; unsaved = [int]$pr.unsaved; slot = $pr.slot; files = @($pr.claudeFiles | Where-Object { $_ }) } } })
 
-  $pairs = @(Set-PathMap $manifest)
-  if ($pairs.Count) {
-    Put '   [x] Your folders have different paths on this laptop; fixing them:' ok
-    foreach ($pair in $pairs) { Put ('         ' + $pair[0] + '  ->  ' + $pair[1]) dim }
-    Convert-StageFiles $sh $sa
+  $files = New-Object System.Collections.Generic.List[object]
+  if ($packed -contains 'settings') {
+    foreach ($g in @(@('.claude\CLAUDE.md', 'CLAUDE.md (global)'), @('AGENTS.md', 'AGENTS.md (user folder)'), @('.claude\settings.json', 'settings.json (global)'))) {
+      $in = Join-Path $sh $g[0]
+      if (Test-Path -LiteralPath $in) { $files.Add((New-FileItem $in (Join-Path $HomeDir $g[0]) $g[1] 'settings' $null $g[0])) }
+    }
+  }
+  foreach ($pr in $projects) {
+    if (-not $pr.slot) { continue }
+    foreach ($rel in $pr.files) {
+      $in = Join-Path $work "projects\$($pr.slot)\$rel"
+      if (Test-Path -LiteralPath $in) { $files.Add((New-FileItem $in (Join-Path $pr.path $rel) "$($pr.name)\$rel" 'projects' $pr $rel)) }
+    }
+  }
+  foreach ($f in $files) { Update-FileState $f }
+  if ($Choices) {   # decided ahead of time (the Claude skill): mine, theirs, both, or the path of a merged file
+    $picked = @{}
+    foreach ($p in (Read-Json $Choices).PSObject.Properties) { $picked[$p.Name.Replace('/', '\')] = [string]$p.Value }
+    foreach ($f in $files) {
+      $v = $picked[$f.id]
+      if (-not $v) { continue }
+      if ($v -eq 'mine' -or $v -eq 'theirs' -or ($v -eq 'both' -and $f.bothOk)) { $f.choice = $v.ToLower() }
+      elseif (Test-Path -LiteralPath $v -PathType Leaf) { $f.choice = [IO.Path]::GetFullPath($v) }
+      else { $warnings.Add("Ignored the choice for $($f.label): '$v' isn't mine, theirs, both or a file.") }
+    }
   }
 
-  $script:rel = @{}; $script:forkOf = @{}; $script:pending = @{}; $script:transcriptDir = @{}
-  $script:count = @{ new = 0; updated = 0; kept = 0; both = 0 }
+  $memDirs = @(Get-ChildItem -LiteralPath "$sh\.claude\projects" -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'memory') })
+  $pf = @($files | Where-Object { $_.cat -eq 'projects' })
+  $pfProjects = @($pf | ForEach-Object { $_.project.path } | Sort-Object -Unique).Count
+  $missing = @($projects | Where-Object { -not (Test-Path -LiteralPath $_.path) })
+  $fromGit = @($missing | Where-Object { $_.remote })
+  $lsHere = Test-Path -LiteralPath "$claudeDir\Local Storage"
+  $items = @()
+  if ($packed -contains 'chats') { $items += [ordered]@{ key = 'chats'; on = $true; detail = "$(Plural $mf.sessions 'session'), $(Plural $mf.transcripts 'chat')" } }
+  if ($packed -contains 'settings') { $items += [ordered]@{ key = 'settings'; on = $true; detail = 'CLAUDE.md, settings, hooks, skills, plugins' } }
+  if ($memDirs.Count) { $items += [ordered]@{ key = 'memory'; on = $true; detail = "notes Claude keeps, in $(Plural $memDirs.Count 'project')" } }
+  if ($pf.Count) { $items += [ordered]@{ key = 'projects'; on = $true; detail = "$(Plural $pf.Count 'file') GitHub doesn't have, in $(Plural $pfProjects 'project')" } }
+  if (Test-Path -LiteralPath "$sa\Local Storage") { $items += [ordered]@{ key = 'sidebar'; on = ($script:firstMoove -or -not $lsHere); detail = '' } }
+  if ($fromGit.Count) { $items += [ordered]@{ key = 'download'; on = $true; detail = "$(Plural $fromGit.Count 'project folder') from GitHub" } }
+  if ($What.Count) { foreach ($it in $items) { $it.on = $What -contains $it.key } }
+  @{ src = $src; mf = $mf; work = $work; sh = $sh; sa = $sa; pairs = $pairs; livedIn = $livedIn; projects = $projects
+    missing = $missing; fromGit = $fromGit; files = $files; items = $items; lsHere = $lsHere; canReceive = $false
+    installed = (Test-Path -LiteralPath (Join-Path $claudeDir 'config.json')); account = (Get-AccountState $mf)
+    open = (Test-ClaudeOpen); node = [bool](Get-Command node -ErrorAction SilentlyContinue) }
+}
+function Get-ShownConflicts($P) {   # differences in the kinds of data that are ticked
+  $on = @($P.items | Where-Object { $_.on } | ForEach-Object { $_.key })
+  @($P.files | Where-Object { $_.state -eq 'conflict' -and $on -contains $_.cat })
+}
+function Get-ChoiceText([string]$c) {
+  switch ($c) { 'both' { 'keep both, Claude merges them' } 'mine' { "keep this PC's" } 'theirs' { "take the old laptop's" } default { 'use the merged version' } }
+}
+
+function Show-UnpackMenu($P, $state) {
+  Show-Top 'Pick what comes in, then press Enter.'
+  $mf = $P.mf
+  Put ("   From $($mf.computer), packed " + ([datetime]$mf.created).ToString('yyyy-MM-dd HH:mm') + ':  ') plain -n; Put $P.src dim
+  if ($P.livedIn) { Put '   This PC already has its own Claude chats. They stay; yours are merged in next to them.' plain }
+  switch ($P.account) {
+    'same' { Put '   [x] Signed in to the same account.' ok }
+    'different' { Put "   [!] Claude is signed in to a different account than on $($mf.computer); your sessions only show up in that one." warn; Put '       Switch accounts in Claude, then press A. Or just carry on.' dim }
+    'none' { Put "   [!] You're not signed in to Claude yet. Sign in with the same account, then press A." warn }
+    'noapp' { Put "   [!] Claude isn't installed here yet (or hasn't been opened once).   D  open the download page" warn }
+  }
+  if ($P.pairs.Count) { Put '   Your folders have different paths here; I fix them as I go:' plain; foreach ($pair in $P.pairs) { Put ('      ' + $pair[0] + '  ->  ' + $pair[1]) dim } }
+  Gap
+  Put '   What comes in' title
+  $n = 0
+  foreach ($it in $P.items) {
+    $n++
+    if ($it.key -eq 'sidebar') { $it.detail = if (-not $it.on) { 'this PC keeps its own' } elseif ($P.lsHere) { "replaces this PC's (it's saved first)" } else { 'grouping and pins from your old laptop' } }
+    Write-Item $n $it $(if ($it.key -eq 'download' -and -not $script:hasGit) { 'needs Git (press G)' })
+  }
+  $shown = @(Get-ShownConflicts $P)
+  if ($shown.Count) {
+    Gap
+    Put '   Changed on both laptops (type a number to switch)' title
+    foreach ($f in $shown) {
+      $n++
+      Put ('   {0,2}  {1,-31} ' -f $n, $f.label) plain -n
+      Put (Get-ChoiceText $f.choice) pink -n
+      Put $(if ($f.newer -eq 'theirs') { '   newer on the old laptop' } else { '   newer here' }) dim
+    }
+  }
+  Gap
+  if ($P.open) { Put '   Claude is open. Settings, memory and project files can come in now;' plain; Put '   chats and the sidebar layout come in the moment you close it.    C  close Claude now' plain }
+  else { Put '   [x] Claude is closed, so everything can come in.' ok }
+  if (-not $P.node) { Put '   [ ] Node.js is missing: many hooks need it, and so do the merge notes.   N  install it' warn }
+  if (-not $script:hasGit -and @($P.items | Where-Object { $_.key -eq 'download' -and $_.on }).Count) { Put '   [ ] Git is missing, so your projects cannot come from GitHub.   G  install it' warn }
+  if ($P.canReceive) { Put '    R  receive it over the internet instead, with a code' dim }
+  if ($state.msg) { Gap; Put "   $($state.msg)" warn; $state.msg = '' }
+  Gap
+  Put '   Type a number or letter and press Enter to change something. Just Enter starts, Q quits.' dim
+}
+
+function Write-Plan($P) {   # -Plan: what would happen, with copies of the other laptop's versions to compare. Changes nothing.
+  $review = Join-Path $env:TEMP ('claude-moove-review\' + $stamp.Replace(' ', '-'))
+  Remove-Tree $review
+  New-Item -ItemType Directory -Force $review | Out-Null
+  $i = 0
+  $conflicts = @(foreach ($f in $P.files) {
+      if ($f.state -ne 'conflict') { continue }
+      $i++; $copy = Join-Path $review ('{0:00}-{1}' -f $i, (Split-Path $f.dest -Leaf))
+      Copy-Item -LiteralPath $f.incoming $copy -Force
+      [ordered]@{ id = $f.id; label = $f.label; kind = $f.cat; mine = $f.dest; theirs = $copy; newer = $f.newer; suggested = $f.default
+        choices = @(if ($f.bothOk) { 'mine', 'theirs', 'both' } else { 'mine', 'theirs' }) }
+    })
+  $wanted = [ordered]@{}; foreach ($it in $P.items) { $wanted[$it.key] = [bool]$it.on }
+  Write-Result ([ordered]@{
+      ok = $true; plan = $true; folder = $P.src; from = $P.mf.computer; packedAt = $P.mf.created
+      livedIn = $P.livedIn; freshInstall = $script:firstMoove; claudeOpen = $P.open; claudeInstalled = $P.installed; account = $P.account
+      node = $P.node; git = $script:hasGit; what = $wanted
+      paths = @($P.pairs | ForEach-Object { [ordered]@{ old = $_[0]; new = $_[1] } })
+      conflicts = $conflicts
+      missingProjects = @($P.missing | ForEach-Object { [ordered]@{ name = $_.name; path = $_.path; fromGitHub = [bool]$_.remote } })
+      waitsForClaudeToClose = @(if ($P.open) { @('chats', 'sidebar') | Where-Object { $wanted[$_] } })
+      warnings = @($warnings) })
+  Remove-Tree $P.work; $script:work = $null
+}
+
+# ---------------------------------------------------------------- moving things in
+function Save-Safety([string]$dest) {   # a copy of a file before it's replaced, in ~/.claude-moove-safety/<date>
+  $keep = Join-Path $script:safety $dest.Substring([IO.Path]::GetPathRoot($dest).Length)
+  New-Item -ItemType Directory -Force (Split-Path $keep) | Out-Null
+  Copy-Item -LiteralPath $dest $keep -Force
+  $script:replaced++
+}
+function Copy-Newer($f, [string]$dest) {   # one settings file: the newer copy wins (the packed one on a brand-new install)
+  if (Test-Path -LiteralPath $dest) {
+    if ((Get-FileHash -LiteralPath $dest).Hash -eq (Get-FileHash -LiteralPath $f.FullName).Hash) { return }
+    if (-not $script:firstMoove -and (Get-Item -LiteralPath $dest -Force).LastWriteTimeUtc -ge $f.LastWriteTimeUtc) { return }
+    Save-Safety $dest
+  }
+  New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
+  Copy-Item -LiteralPath $f.FullName $dest -Force
+}
+function Use-Choice($f) {   # a file changed on both laptops, settled the way the user (or Claude) chose
+  $c = $f.choice; $other = $null
+  if ($c -eq 'both') {   # this PC's stays in use; the old laptop's sits next to it until Claude merges them
+    $other = Join-Path (Split-Path $f.dest) ([IO.Path]::GetFileNameWithoutExtension($f.dest) + '.from-' + $script:fromTag + [IO.Path]::GetExtension($f.dest))
+    Copy-Item -LiteralPath $f.incoming $other -Force
+    $script:fileNotes.Add([ordered]@{ file = $f.dest; other = $other; from = $script:fromPc })
+  } elseif ($c -ne 'mine') {   # theirs, or a merged version
+    Save-Safety $f.dest
+    Copy-Item -LiteralPath $(if ($c -eq 'theirs') { $f.incoming } else { $c }) $f.dest -Force
+  }
+  $script:settled[$f.dest] = $f.hash
+  $script:choicesMade.Add([ordered]@{ id = $f.id; label = $f.label; choice = $(if ($c -in 'mine', 'theirs', 'both') { $c } else { 'merged' }); otherCopy = $other })
+}
+function Use-File($f) {   # $true if the file came in or was settled
+  Update-FileState $f   # looks again: the project may have just come from GitHub
+  if ($f.state -eq 'copy') { New-Item -ItemType Directory -Force (Split-Path $f.dest) | Out-Null; Copy-Item -LiteralPath $f.incoming $f.dest -Force; return $true }
+  if ($f.state -eq 'conflict') { Use-Choice $f; return $true }
+  $false
+}
+function Move-Settings($P, [switch]$SkipLive, [switch]$LiveOnly) {
+  $sh = $P.sh; $sa = $P.sa
+  $config = @(Get-ChildItem -LiteralPath "$sh\.claude" -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in '.json', '.md' }) +
+    @(Get-ChildItem -LiteralPath "$sh\.claude\plugins" -File -Force -Filter *.json -ErrorAction SilentlyContinue) +
+    @(Get-ChildItem -LiteralPath $sh -File -Force -ErrorAction SilentlyContinue) +
+    @(Get-Item -LiteralPath "$sa\claude_desktop_config.json" -Force -ErrorAction SilentlyContinue)
+  $chosen = @($P.files | Where-Object { $_.cat -eq 'settings' } | ForEach-Object { $_.incoming })
+  if (-not $LiveOnly) {
+    Copy-Tree "$sh\.claude" "$HomeDir\.claude" 'Putting your settings, hooks, skills and plugins in place...' (
+      @('/XD') + ($chatDirs | ForEach-Object { Q "$sh\.claude\$_" }) + @('/XF', (Q "$sh\.claude\history.jsonl")) +
+      ($config | Where-Object { $_.FullName.StartsWith("$sh\.claude\") } | ForEach-Object { Q $_.FullName })) -Merge
+    foreach ($f in $P.files) { if ($f.cat -eq 'settings') { [void](Use-File $f) } }
+  }
+  foreach ($f in $config) {
+    $live = $liveNames -contains $f.Name
+    if (($chosen -contains $f.FullName) -or ($SkipLive -and $live) -or ($LiveOnly -and -not $live)) { continue }
+    $dest = if ($f.FullName.StartsWith($sa)) { $claudeDir + $f.FullName.Substring($sa.Length) } else { $HomeDir + $f.FullName.Substring($sh.Length) }
+    Copy-Newer $f $dest
+  }
+}
+function Move-Memory($P) {
+  foreach ($d in Get-ChildItem -LiteralPath "$($P.sh)\.claude\projects" -Directory -ErrorAction SilentlyContinue) {
+    if (Test-Path -LiteralPath "$($d.FullName)\memory") { Copy-Tree "$($d.FullName)\memory" "$HomeDir\.claude\projects\$($d.Name)\memory" 'Putting memory in place...' -Merge }
+  }
+}
+function Move-ProjectFiles($P) {   # into the project folders that are here; the others wait until their folder is
+  $n = 0
+  foreach ($pr in $P.projects) {
+    $mine = @($P.files | Where-Object { $_.project -eq $pr })
+    if (-not $mine.Count) { continue }
+    if (-not (Test-Path -LiteralPath $pr.path)) { continue }   # the warnings at the end say what to do
+    foreach ($f in $mine) { if (Use-File $f) { $n++ } }
+  }
+  if ($n) { Put "   [x] Project Claude files are in: $(Plural $n 'file')." ok }
+}
+function Clone-Projects($P) {   # downloads missing project folders from GitHub to exactly their old places
+  foreach ($m in $P.fromGit) {
+    if (Test-Path -LiteralPath $m.path) { continue }
+    if ($Test) { $warnings.Add("Test run: '$($m.name)' wasn't downloaded."); continue }
+    New-Item -ItemType Directory -Force (Split-Path $m.path) | Out-Null
+    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    if ($quiet) { & git clone $m.remote $m.path 2>&1 | Out-Null } else { & git clone $m.remote $m.path | Out-Host }
+    $ErrorActionPreference = $old
+    if (Test-Path -LiteralPath $m.path) { Put ('   [x] Downloaded ' + $m.name) ok; $script:downloaded++ }
+  }
+}
+function Move-Chats($P) {   # needs Claude closed: the app keeps its session list in memory and writes it back
+  $sh = $P.sh; $sa = $P.sa
   $referenced = New-Object 'System.Collections.Generic.HashSet[string]'
   foreach ($dir in "$sa\claude-code-sessions", "$claudeDir\claude-code-sessions") {
     foreach ($f in Get-ChildItem -LiteralPath $dir -Recurse -File -Filter 'local_*.json' -ErrorAction SilentlyContinue) {
@@ -787,128 +1126,205 @@ function Invoke-Unpack([switch]$FromMenu) {
   }
   Merge-Transcripts $sh $referenced
   Merge-Sessions $sa
-
-  # Settings and instruction files. Normally the newer copy wins. On a brand-new install the packed ones win,
-  # because what's there is just the install's defaults. Anything replaced is saved in the safety folder first.
-  $safety = Join-Path $HomeDir ".claude-moove-safety\$stamp"
-  $config = @()
-  $config += Get-ChildItem -LiteralPath "$sh\.claude" -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in '.json', '.md' }
-  $config += Get-ChildItem -LiteralPath "$sh\.claude\plugins" -File -Force -Filter *.json -ErrorAction SilentlyContinue
-  $config += Get-ChildItem -LiteralPath $sh -File -Force -ErrorAction SilentlyContinue
-  $config += Get-ChildItem -LiteralPath $sa -File -Force -Filter *.json -ErrorAction SilentlyContinue
-  $toHome = { param($p) if ($p.StartsWith($sh)) { $HomeDir + $p.Substring($sh.Length) } else { $claudeDir + $p.Substring($sa.Length) } }
-
-  Copy-Tree "$sh\.claude" "$HomeDir\.claude" 'Putting your chats, hooks, skills and memory in place...' (
-    @('/XF') + ($config | Where-Object { $_.FullName.StartsWith("$sh\.claude\") } | ForEach-Object { Q $_.FullName })) -Merge
-  Copy-Tree $sa $claudeDir "Putting the app's session list in place..." (
-    @('/XD', (Q "$sa\Local Storage"), '/XF') + ($config | Where-Object { $_.FullName.StartsWith($sa) } | ForEach-Object { Q $_.FullName })) -Merge
-
-  $replaced = 0
-  foreach ($f in $config) {
-    $dest = & $toHome $f.FullName
-    if (Test-Path -LiteralPath $dest) {
-      if ((Get-FileHash -LiteralPath $dest).Hash -eq (Get-FileHash -LiteralPath $f.FullName).Hash) { continue }
-      if (-not $firstMoove -and (Get-Item -LiteralPath $dest -Force).LastWriteTimeUtc -ge $f.LastWriteTimeUtc) { continue }
-      $keep = Join-Path $safety $dest.Substring([IO.Path]::GetPathRoot($dest).Length)
-      New-Item -ItemType Directory -Force (Split-Path $keep) | Out-Null
-      Copy-Item -LiteralPath $dest $keep -Force
-      $replaced++
-    }
-    New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
-    Copy-Item -LiteralPath $f.FullName $dest -Force
+  Copy-Tree "$sh\.claude\projects" "$HomeDir\.claude\projects" 'Putting your chats in place...' @('/XD', 'memory') -Merge
+  foreach ($d in $chatDirs) { if ($d -ne 'projects') { Copy-Tree "$sh\.claude\$d" "$HomeDir\.claude\$d" 'Putting your chats in place...' -Merge } }
+  foreach ($d in $appChats) { Copy-Tree "$sa\$d" "$claudeDir\$d" "Putting the app's session list in place..." -Merge }
+  foreach ($f in @(Get-Item -LiteralPath "$sh\.claude\history.jsonl", "$sa\git-worktrees.json" -Force -ErrorAction SilentlyContinue)) {
+    Copy-Newer $f $(if ($f.Name -eq 'history.jsonl') { "$HomeDir\.claude\history.jsonl" } else { "$claudeDir\git-worktrees.json" })
   }
-  # The sidebar layout is a small database that can't be mixed, so only a brand-new install gets the old laptop's.
-  # Anywhere else this PC keeps its own (its sessions all still show up; only grouping and pins are layout).
-  $lsS = "$sa\Local Storage"; $lsT = "$claudeDir\Local Storage"
-  if ((Test-Path -LiteralPath $lsS) -and ($firstMoove -or -not (Test-Path -LiteralPath $lsT))) {
-    if (Test-Path -LiteralPath $lsT) { New-Item -ItemType Directory -Force $safety | Out-Null; Move-Item -LiteralPath $lsT (Join-Path $safety 'Local Storage'); $replaced++ }
-    Copy-Tree $lsS $lsT 'Putting your sidebar layout in place...'
-  }
-  if ($script:pending.Count) {
-    $pf = Join-Path $HomeDir '.claude\claude-moove\pending-merges.json'
-    $all = [ordered]@{}
-    if (Test-Path -LiteralPath $pf) { (Read-Json $pf).PSObject.Properties | ForEach-Object { $all[$_.Name] = $_.Value } }
-    foreach ($k in $script:pending.Keys) { $all[$k] = $script:pending[$k] }
-    New-Item -ItemType Directory -Force (Split-Path $pf) | Out-Null
-    [IO.File]::WriteAllText($pf, ($all | ConvertTo-Json -Depth 5), $utf8)
-  }
-  [IO.File]::WriteAllText($marker, ([ordered]@{ lastUnpack = (Get-Date).ToString('o'); from = $manifest.computer } | ConvertTo-Json), $utf8)
-  Remove-Tree $work; $script:work = $null
-
   $cnt = $script:count
+  Put '   [x] Your chats are in.' ok
   if ($cnt.new) { Put "   [x] Added from your old laptop: $(Plural $cnt.new 'session')." ok }
   if ($cnt.updated) { Put "   [x] Updated because the other laptop's copy was newer: $(Plural $cnt.updated 'session')." ok }
   if ($cnt.kept) { Put "   [x] Already up to date here, left as they are: $(Plural $cnt.kept 'session')." ok }
   if ($cnt.both) { Put "   [x] Used on BOTH laptops: $(Plural $cnt.both 'chat'). You get both copies, nothing lost." warn }
-  if ($replaced) { Put "   [x] Older settings replaced; the old ones are saved in $safety" ok }
-
-  Set-Step 6
-  $tools = @(
-    @{ name = 'Node.js'; cmd = 'node'; id = 'OpenJS.NodeJS.LTS'; url = 'https://nodejs.org/en/download'; why = 'Claude hooks and plugins often run on it' },
-    @{ name = 'Git'; cmd = 'git'; id = 'Git.Git'; url = 'https://git-scm.com/download/win'; why = 'Claude uses it in your projects, and it can download them from GitHub' })
-  foreach ($tool in $tools) {
-    if (Get-Command $tool.cmd -ErrorAction SilentlyContinue) { Put "   [x] $($tool.name) is installed." ok; continue }
-    Put "   [ ] $($tool.name) is missing: $($tool.why)." warn
-    if ($Test) { $warnings.Add("$($tool.name) isn't installed."); continue }
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-      if ((Read-Answer "Press Enter to install $($tool.name) now (this accepts its license), or type S and Enter to skip.") -ne 'S') {
-        $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-        & winget install --id $tool.id -e --silent --accept-package-agreements --accept-source-agreements
-        $ErrorActionPreference = $old; Update-Path
-      }
-    } else {
-      Wait-Enter "Press Enter to open the $($tool.name) download page."
-      Start-Process $tool.url
-      Wait-Enter 'Install it, then press Enter.'
-      Update-Path
-    }
-    if (Get-Command $tool.cmd -ErrorAction SilentlyContinue) { Put "   [x] $($tool.name) is installed." ok } else { $warnings.Add("$($tool.name) still isn't installed: $($tool.why).") }
+}
+function Move-Sidebar($P) {   # a small database that can't be mixed: it comes in whole, and this PC's is saved first
+  $lsS = "$($P.sa)\Local Storage"; $lsT = "$claudeDir\Local Storage"
+  if (-not (Test-Path -LiteralPath $lsS)) { return }
+  if (Test-Path -LiteralPath $lsT) { New-Item -ItemType Directory -Force $script:safety | Out-Null; Move-Item -LiteralPath $lsT (Join-Path $script:safety 'Local Storage'); $script:replaced++ }
+  Copy-Tree $lsS $lsT 'Putting your sidebar layout in place...'
+  Put '   [x] Sidebar layout is in.' ok
+}
+function Wait-ClaudeClosed {   # $true once Claude is closed, $false if the user skips
+  Put '   Close Claude now, and the rest comes in right away.' title
+  Put '   Quit it from its icon near the clock, or press C and I close it for you. S skips this for now.' dim
+  Gap
+  $t0 = Get-Date; $frame = 0
+  while (Test-ClaudeOpen) {
+    $key = ''
+    if ($Test) { $key = Read-Line; if (-not $key) { $key = 'S' } }   # scripted test input; when it runs out, skip
+    else { try { if ([Console]::KeyAvailable) { $key = [string][Console]::ReadKey($true).KeyChar } } catch {} }
+    if ($key -eq 'S') { Gap; return $false }
+    if ($key -eq 'C' -and -not (Stop-Claude)) { Put "`r   Claude didn't close. Quit it from its icon near the clock." warn }
+    Show-Walk $frame 'Waiting for Claude to close...' $t0
+    Start-Sleep -Milliseconds 350; $frame = 1 - $frame
   }
-  if ($script:pending.Count) {
-    # The one-time "this chat was also used on your other laptop" note. Inert unless a note is waiting.
+  if (-not $Test -and -not $quiet) { Write-Host ("`r" + (' ' * 70) + "`r") -NoNewline }
+  Put '   [x] Claude is closed.' ok
+  $true
+}
+
+function Invoke-MoveIn($P) {
+  $want = @{}; foreach ($it in $P.items) { $want[$it.key] = [bool]$it.on }
+  if ($want.download -and -not $script:hasGit) { $want.download = $false; $warnings.Add("Git isn't installed, so your projects weren't downloaded from GitHub.") }
+  if (-not ($want.Values -contains $true)) { throw 'Nothing was ticked, so there is nothing to move in.' }
+  $script:safety = Join-Path $HomeDir ".claude-moove-safety\$stamp"
+  $script:replaced = 0; $script:downloaded = 0
+  $script:fileNotes = New-Object System.Collections.Generic.List[object]
+  $script:choicesMade = New-Object System.Collections.Generic.List[object]
+  $script:settled = @{}; $script:rel = @{}; $script:forkOf = @{}; $script:pending = @{}; $script:transcriptDir = @{}
+  $script:count = @{ new = 0; updated = 0; kept = 0; both = 0 }
+  $script:fromPc = if ($P.mf.computer) { [string]$P.mf.computer } else { 'other laptop' }
+  $script:fromTag = $script:fromPc -replace '[^A-Za-z0-9]+', '-'
+  if ($WhenClosed -and (Test-ClaudeOpen)) {
+    Show-Top 'Close Claude, and the rest comes in.'
+    if (-not (Wait-ClaudeClosed)) { Remove-Tree $P.work; $script:work = $null; Put '   Nothing more was changed. Run this again once Claude is closed.' dim; End-Wait; return }
+  }
+  $files = $want.settings -or $want.memory -or $want.projects
+  $later = $want.chats -or $want.sidebar
+  $script:steps = @()
+  if ($want.download) { $script:steps += 'Download your projects' }
+  if ($files) { $script:steps += 'Settings, memory and project files' }
+  if ($later) { $script:steps += 'Chats and sidebar layout' }
+  $s = 0; $waiting = @(); $open = Test-ClaudeOpen
+
+  if ($want.download) { $s++; Set-Step $s; Clone-Projects $P }
+  if ($files) {   # these are fine with Claude open
+    $s++; Set-Step $s
+    if ($want.settings) { Move-Settings $P -SkipLive:($open -and $later); Put '   [x] Settings, hooks, skills and plugins are in.' ok }
+    if ($want.memory) { Move-Memory $P; Put '   [x] Memory is in.' ok }
+    if ($want.projects) { Move-ProjectFiles $P }
+    foreach ($c in $script:choicesMade) {
+      $how = switch ($c.choice) { 'both' { 'kept both; the old laptop''s is next to it as ' + (Split-Path $c.otherCopy -Leaf) } 'mine' { "kept this PC's" } 'theirs' { "took the old laptop's" } default { 'used the merged version' } }
+      Put "   [x] $($c.label): $how." ok
+    }
+  }
+  if ($later) {   # these need Claude closed
+    $s++; Set-Step $s
+    if ((Test-ClaudeOpen) -and $interactive) { [void](Wait-ClaudeClosed) }
+    if (Test-ClaudeOpen) {
+      $waiting = @(@('chats', 'sidebar') | Where-Object { $want[$_] }) + @(if ($want.settings -and $open) { 'settings' })
+      Put '   Claude is still open, so your chats and sidebar layout wait for now.' warn
+    } else {
+      if ($want.settings -and $open) { Move-Settings $P -LiveOnly }
+      if ($want.chats) { Move-Chats $P }
+      if ($want.sidebar) { Move-Sidebar $P }
+    }
+  }
+
+  # Claude's one-time notes: chats continued on both laptops, and files kept in both versions
+  if ($script:pending.Count -or $script:fileNotes.Count) {
+    $pf = Join-Path $HomeDir '.claude\claude-moove\pending-merges.json'
+    $all = [ordered]@{}
+    try { foreach ($prop in (Read-Json $pf).PSObject.Properties) { $all[$prop.Name] = $prop.Value } } catch {}
+    foreach ($k in $script:pending.Keys) { $all[$k] = $script:pending[$k] }
+    if ($script:fileNotes.Count) { $all['*'] = @(@($all['*']) | Where-Object { $_ }) + $script:fileNotes.ToArray() }
+    New-Item -ItemType Directory -Force (Split-Path $pf) | Out-Null
+    [IO.File]::WriteAllText($pf, ($all | ConvertTo-Json -Depth 5), $utf8)
     $hook = Join-Path $HomeDir '.claude\hooks\claude-moove-merge.mjs'
     New-Item -ItemType Directory -Force (Split-Path $hook) | Out-Null
     Copy-Item -LiteralPath (Join-Path $engine 'claude-moove-merge.mjs') $hook -Force
-    if (Get-Command node -ErrorAction SilentlyContinue) { & node $hook --install (Join-Path $HomeDir '.claude\settings.json'); Put '   [x] Merge note switched on for the chats used on both laptops.' ok }
-    else { $warnings.Add('The note about chats used on both laptops needs Node.js; both copies are still there.') }
+    if (Get-Command node -ErrorAction SilentlyContinue) { & node $hook --install (Join-Path $HomeDir '.claude\settings.json') }
+    else { $warnings.Add("Claude's one-time notes about what changed on both laptops need Node.js. Everything is still there; install Node.js and move in again to switch them on.") }
   }
+  foreach ($m in $P.missing) {
+    $nf = if ($want.projects) { @($P.files | Where-Object { $_.project -eq $m }).Count } else { 0 }
+    $then = if ($nf) { ", then move in again for its $(Plural $nf 'Claude file')" } else { '' }
+    if (-not (Test-Path -LiteralPath $m.path)) {
+      if (-not $m.remote) { $warnings.Add("Copy the folder '$($m.name)' from your old laptop to exactly: $($m.path)$then.") }
+      elseif ($want.download -and -not $Test) { $warnings.Add("Couldn't download '$($m.name)'. Copy it from your old laptop to exactly: $($m.path)$then.") }
+      elseif ($nf) { $warnings.Add("'$($m.name)' isn't on this laptop yet, so its $(Plural $nf 'Claude file') didn't come in. Get the project, then move in again.") }
+    }
+    elseif ($m.unsaved -gt 0) { $warnings.Add("'$($m.name)' came from GitHub, but its $(Plural $m.unsaved 'unsaved change') from the old laptop aren't in it. Copy them over if you need them.") }
+  }
+  $settled = Read-Marker; foreach ($k in $script:settled.Keys) { $settled[$k] = $script:settled[$k] }
+  Update-Marker @{ lastUnpack = (Get-Date).ToString('o'); from = $script:fromPc; resolved = $settled; freshInstall = ($script:firstMoove -and $waiting.Count -gt 0) }
+  Remove-Tree $P.work; $script:work = $null
 
-  Set-Step 7
-  $missing = @()
-  foreach ($proj in @($manifest.projects)) {
-    if (-not $proj) { continue }
-    $path = Convert-Text $proj.path
-    if (-not (Test-Path -LiteralPath $path)) { $missing += [pscustomobject]@{ path = $path; remote = $proj.remote; unsaved = $proj.unsaved } }
+  $opened = $false
+  if ($waiting.Count -and -not $interactive -and -not $Test) {   # the Claude skill: a small window brings in the rest once Claude is closed
+    Start-Process powershell -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Q (Join-Path $engine 'claude-moove.ps1')),
+      '-Mode', 'unpack', '-From', (Q $P.src), '-What', ($waiting -join ','), '-WhenClosed',
+      '-HomeDir', (Q $HomeDir), '-AppDataDir', (Q $AppDataDir), '-DesktopDir', (Q $DesktopDir), '-DocumentsDir', (Q $DocumentsDir))
+    $opened = $true
   }
-  if (-not $missing.Count) { Put '   [x] All your project folders are here.' ok }
-  else {
-    $fromGit = @($missing | Where-Object { $_.remote })
-    if ($fromGit.Count -and (Get-Command git -ErrorAction SilentlyContinue)) {
-      Put "   These project folders aren't on this laptop yet, but they're on GitHub:" plain
-      foreach ($m in $fromGit) { Put ('      ' + $m.path) plain }
-      $answer = Read-Answer 'Press Enter to download them to exactly those places (a GitHub sign-in may pop up), or type S and Enter to skip.'
-      if (-not $Test -and $answer -ne 'S') {
-        foreach ($m in $fromGit) {
-          New-Item -ItemType Directory -Force (Split-Path $m.path) | Out-Null
-          $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-          & git clone $m.remote $m.path
-          $ErrorActionPreference = $old
-          if (Test-Path -LiteralPath $m.path) { Put ('   [x] Downloaded ' + (Split-Path $m.path -Leaf)) ok }
-        }
-      }
-    }
-    foreach ($m in $missing) {
-      $name = Split-Path $m.path -Leaf
-      if (-not (Test-Path -LiteralPath $m.path)) { $warnings.Add("Copy the folder '$name' from your old laptop to exactly: $($m.path)") }
-      elseif ($m.unsaved -gt 0) { $warnings.Add("'$name' came from GitHub, but its $($m.unsaved) unsaved changes from the old laptop aren't in it. Copy them over if you need them.") }
-    }
-  }
-  $final = @("[x] You're moved in. Open Claude: your sessions are in the sidebar.")
-  if ($cnt.both) { $final += "[x] Used on both laptops: $(Plural $cnt.both 'chat'). You have both: the one from here, and the one marked '(other laptop)'.", "    The first time you open either, Claude gets a one-time note about what happened in the other." }
+  $cnt = $script:count
+  $final = @()
+  if ($waiting.Count) {
+    $final += "[!] Still to come: $(($waiting | ForEach-Object { Get-Lower $_ }) -join ', '). They need Claude closed."
+    $final += $(if ($opened) { '    A small Claude Moove window is waiting: close Claude, and they come in right away.' } else { '    Close Claude and move in again; it only adds what is missing.' })
+  } else { $final += "[x] You're moved in. Open Claude: your sessions are in the sidebar." }
+  if ($cnt.both) { $final += "[x] Used on both laptops: $(Plural $cnt.both 'chat'). You have both: the one from here, and the one marked '(other laptop)'.", '    The first time you open either, Claude gets a one-time note about what happened in the other.' }
+  if ($script:fileNotes.Count) { $final += "[x] Kept both versions of $(Plural $script:fileNotes.Count 'file') changed on both laptops. Next time you start Claude,", "    it offers to merge them. The old laptop's versions end in  .from-$($script:fromTag)" }
+  if ($script:replaced) { $final += "    Anything replaced is saved in $($script:safety)" }
   if ($script:received) { $final += "    The folder that came over is on your Desktop ($(Split-Path $script:received -Parent | Split-Path -Leaf)). Delete it once all looks right." }
   foreach ($w in $warnings) { $final += "[!] $w" }
   $final += '', 'Next time you move, paste the same line into PowerShell and choose  1  (pack up):', "      $oneLiner"
   Show-Big -Bloom $final
+  Write-Result ([ordered]@{
+      ok = $true; folder = $P.src; from = $script:fromPc
+      moved = @($P.items | Where-Object { $want[$_.key] -and $waiting -notcontains $_.key } | ForEach-Object { $_.key }); waiting = $waiting; finishWindow = $opened
+      sessions = [ordered]@{ added = $cnt.new; updated = $cnt.updated; unchanged = $cnt.kept; usedOnBoth = $cnt.both }
+      choices = $script:choicesMade.ToArray(); downloaded = $script:downloaded
+      safetyFolder = $(if ($script:replaced) { $script:safety } else { $null }); warnings = @($warnings) })
+  End-Wait
+}
+
+function Invoke-Unpack {
+  $script:doing = 'moving in on this laptop'; $script:steps = $null
+  Show-Top 'Looking for your packed stuff...'
+  $src = Find-Source
+  $P = Get-UnpackPlan $src
+  $P.canReceive = $interactive -and -not $From -and -not $script:received -and ($src -ne $toolRoot)
+  if ($Plan) { Write-Plan $P; return }
+  $state = @{ msg = '' }
+  while ($interactive -and -not $WhenClosed) {
+    $P.installed = Test-Path -LiteralPath (Join-Path $claudeDir 'config.json'); $P.account = Get-AccountState $P.mf; $P.open = Test-ClaudeOpen
+    Show-UnpackMenu $P $state
+    $a = Read-Choice
+    $shown = @(Get-ShownConflicts $P); $k = 0
+    if ($a -eq '') { if ($P.installed) { break }; $state.msg = "Claude isn't installed yet: press D for the download page, open Claude once and sign in, then press Enter." }
+    elseif ($a -eq 'Q') { Remove-Tree $P.work; $script:work = $null; Put '   Nothing was changed.' dim; End-Wait; return }
+    elseif ([int]::TryParse($a, [ref]$k) -and $k -ge 1 -and $k -le $P.items.Count + $shown.Count) {
+      if ($k -le $P.items.Count) {
+        $it = $P.items[$k - 1]
+        if ($it.key -eq 'download' -and -not $script:hasGit) { $state.msg = 'Downloading projects needs Git: press G to install it.' } else { $it.on = -not $it.on }
+      } else {
+        $f = $shown[$k - $P.items.Count - 1]
+        $opts = if ($f.bothOk) { @('both', 'mine', 'theirs') } else { @('mine', 'theirs') }
+        $f.choice = $opts[([array]::IndexOf($opts, $f.choice) + 1) % $opts.Count]
+      }
+    }
+    elseif ($a -eq 'C' -and $P.open) { if (-not (Stop-Claude)) { $state.msg = "Claude didn't close. Quit it from its icon near the clock." } }
+    elseif ($a -eq 'N' -and -not $P.node) { Install-Tool 'node'; $P.node = [bool](Get-Command node -ErrorAction SilentlyContinue) }
+    elseif ($a -eq 'G' -and -not $script:hasGit) { Install-Tool 'git'; $script:hasGit = [bool](Get-Command git -ErrorAction SilentlyContinue) }
+    elseif ($a -eq 'D') { if (-not $Test) { Start-Process 'https://claude.ai/download' } }
+    elseif ($a -eq 'A') { }
+    elseif ($a -eq 'R' -and $P.canReceive) {
+      try { $got = Receive-Folder; $P = Get-UnpackPlan $got } catch { $state.msg = $_.Exception.Message }
+    }
+    else { $state.msg = "I didn't get that one." }
+  }
+  if (-not (Test-Path -LiteralPath (Join-Path $claudeDir 'config.json'))) { throw "Claude isn't installed on this laptop yet (or hasn't been opened once). Install it from claude.ai/download, open it once and sign in, then move in." }
+  Invoke-MoveIn $P
+}
+
+function Install-Skill {   # copies the skill and this engine into ~/.claude/skills/claude-moove, so Claude can run moves
+  $skill = Join-Path $toolRoot 'skills\claude-moove\SKILL.md'
+  if (-not (Test-Path -LiteralPath $skill)) { throw "This copy of Claude Moove doesn't include the skill. Start it with the one-line command to get the latest." }
+  $to = Join-Path $HomeDir '.claude\skills\claude-moove'
+  New-Item -ItemType Directory -Force (Join-Path $to 'engine') | Out-Null
+  Copy-Item -LiteralPath $skill $to -Force
+  foreach ($f in 'claude-moove.ps1', 'claude-moove-merge.mjs', 'README.md') { Copy-Item -LiteralPath (Join-Path $engine $f) (Join-Path $to "engine\$f") -Force }
+  Get-ChildItem -LiteralPath $toolRoot -Filter '*.cmd' | Copy-Item -Destination $to -Force
+  Copy-One (Join-Path $toolRoot 'LICENSE') $to
+  Show-Big -Bloom @(
+    '[x] Claude can now do your moves for you.', '',
+    'In Claude Code or the desktop app, start a new session and type  /claude-moove',
+    'or just ask: "pack up my Claude stuff" or "move my Claude stuff in".',
+    'Claude runs the same steps, and when a file changed on both laptops, it merges the two for you.')
+  Write-Result ([ordered]@{ ok = $true; skill = $to })
   End-Wait
 }
 
@@ -916,10 +1332,12 @@ function Invoke-Menu {   # what the one-line command opens
   Show-Big @(
     "Hi! I move all your Claude stuff from one Windows laptop to another. What are we doing?", '',
     '   1   Pack up THIS laptop      (the one you are leaving)',
-    '   2   Move in on THIS laptop   (the one you are moving to)')
-  switch (Read-Answer 'Type 1 or 2 and press Enter:') {
-    '1' { Invoke-Pack -FromMenu }
-    '2' { Invoke-Unpack -FromMenu }
+    '   2   Move in on THIS laptop   (the one you are moving to)',
+    '   3   Let Claude do it         (adds Claude Moove to Claude as a skill)')
+  switch (Read-Answer 'Type 1, 2 or 3 and press Enter:') {
+    '1' { Invoke-Pack }
+    '2' { Invoke-Unpack }
+    '3' { Install-Skill }
     default { Put '   Nothing was changed. See you on moving day!' dim; End-Wait }
   }
 }
@@ -934,20 +1352,28 @@ function Show-Fail([string]$msg) {
 }
 
 function Invoke-Preview {   # draws each screen once, without doing anything, to check how they look
-  $script:what = 'packing up this laptop'
-  $script:steps = 'Close Claude', 'Check your projects', 'Copy your Claude stuff', 'Zip it up', 'Make your transfer folder', 'Send it to the new laptop'
   Write-Host '@@SCREEN The first thing you see'
   Show-Big @(
     "Hi! I move all your Claude stuff from one Windows laptop to another. What are we doing?", '',
     '   1   Pack up THIS laptop      (the one you are leaving)',
-    '   2   Move in on THIS laptop   (the one you are moving to)')
-  Wait-Enter 'Type 1 or 2 and press Enter:'
-  Write-Host '@@SCREEN Every step after that (Clawd stays at the top, the flowers bloom as you go)'
-  Set-Step 4
-  Put '   [x] Copied 42 sessions and 120 chat files.' ok
-  Put '   Zipping...  640 MB so far  2:13' plain
+    '   2   Move in on THIS laptop   (the one you are moving to)',
+    '   3   Let Claude do it         (adds Claude Moove to Claude as a skill)')
+  Wait-Enter 'Type 1, 2 or 3 and press Enter:'
+
+  Write-Host '@@SCREEN Packing: pick what comes along, even with Claude still open'
+  $script:doing = 'packing up this laptop'
+  $items = @(
+    [ordered]@{ key = 'chats'; on = $true; detail = '42 sessions, 120 chats' },
+    [ordered]@{ key = 'settings'; on = $true; detail = 'CLAUDE.md, settings, hooks, skills, plugins' },
+    [ordered]@{ key = 'memory'; on = $true; detail = 'notes Claude keeps, in 6 projects' },
+    [ordered]@{ key = 'projects'; on = $true; detail = "5 files GitHub doesn't have, in 3 projects" },
+    [ordered]@{ key = 'sidebar'; on = $true; detail = 'how your sidebar is organised' })
+  Show-PackMenu $items @{ open = $true; how = 'send'; msg = '' } @([pscustomobject]@{ path = 'C:\Users\Alex\Desktop\recipe-app'; unsaved = 2 })
+  Put '   > ' title
+
   Write-Host '@@SCREEN Sending it over the internet with a one-time code'
-  Set-Step 6
+  $script:steps = 'Copy your Claude stuff', 'Zip it up', 'Make your transfer folder', 'Send it to the new laptop'
+  Set-Step 4
   Put '   [x] Transfer folder ready.' ok
   Gap
   Put '   Your code:   ' plain -n; Put 'joy-buzz-tiger' pink
@@ -959,19 +1385,41 @@ function Invoke-Preview {   # draws each screen once, without doing anything, to
   Put '   The code works once: only type it on your own laptop.' dim
   Gap
   Put '   Sending...  47%  1:12' plain
-  Write-Host '@@SCREEN Unpacking on the new laptop (paths fixed and chats merged for you)'
-  $script:what = 'moving in on this laptop'
-  $script:steps = 'Find your packed stuff', 'Claude app installed', 'Signed in to the same account', 'Close Claude', 'Unpack and merge your chats', 'Node.js and Git', 'Your project folders'
-  Set-Step 5
-  Put '   [x] Your folders have different paths on this laptop; fixing them:' ok
-  Put '         C:\Users\Alex\Desktop  ->  C:\Users\alex.lee\OneDrive\Desktop' dim
-  Put '         C:\Users\Alex  ->  C:\Users\alex.lee' dim
+
+  Write-Host '@@SCREEN Moving in: pick what comes in, and settle what changed on both laptops'
+  $script:doing = 'moving in on this laptop'; $script:steps = $null; $script:hasGit = $true
+  $fake = { param($label, $cat, $choice, $newer) [pscustomobject]@{ label = $label; cat = $cat; state = 'conflict'; choice = $choice; newer = $newer; bothOk = $true } }
+  $P = @{
+    src = 'E:\Claude Moove 2026-01-01 1200'; mf = [pscustomobject]@{ computer = 'OLD-LAPTOP'; created = '2026-01-01T12:00:00' }
+    livedIn = $true; account = 'same'; lsHere = $true; open = $true; node = $true; canReceive = $true
+    pairs = @(@('C:\Users\Alex\Desktop', 'C:\Users\alex.lee\OneDrive\Desktop'), @('C:\Users\Alex', 'C:\Users\alex.lee'))
+    items = @(
+      [ordered]@{ key = 'chats'; on = $true; detail = '42 sessions, 120 chats' },
+      [ordered]@{ key = 'settings'; on = $true; detail = 'CLAUDE.md, settings, hooks, skills, plugins' },
+      [ordered]@{ key = 'memory'; on = $true; detail = 'notes Claude keeps, in 6 projects' },
+      [ordered]@{ key = 'projects'; on = $true; detail = "5 files GitHub doesn't have, in 3 projects" },
+      [ordered]@{ key = 'sidebar'; on = $false; detail = '' },
+      [ordered]@{ key = 'download'; on = $true; detail = '2 project folders from GitHub' })
+    files = @(
+      (& $fake 'CLAUDE.md (global)' 'settings' 'both' 'theirs'),
+      (& $fake 'settings.json (global)' 'settings' 'theirs' 'theirs'),
+      (& $fake 'recipe-app\CLAUDE.local.md' 'projects' 'mine' 'mine'))
+  }
+  Show-UnpackMenu $P @{ msg = '' }
+  Put '   > ' title
+
+  Write-Host '@@SCREEN Moving in (chats merged for you, nothing here lost)'
+  $script:steps = 'Download your projects', 'Settings, memory and project files', 'Chats and sidebar layout'
+  Set-Step 3
+  Put '   [x] Claude is closed.' ok
+  Put '   [x] Your chats are in.' ok
   Put '   [x] Added from your old laptop: 38 sessions.' ok
   Put "   [x] Updated because the other laptop's copy was newer: 3 sessions." ok
   Put '   [x] Used on BOTH laptops: 1 chat. You get both copies, nothing lost.' warn
-  $script:what = 'packing up this laptop'
-  $script:steps = 'Close Claude', 'Check your projects', 'Copy your Claude stuff', 'Zip it up', 'Make your transfer folder', 'Send it to the new laptop'
+  Put '   Putting your chats in place...  0:41' plain
+
   Write-Host '@@SCREEN The end'
+  $script:steps = $null
   Show-Big -Bloom @(
     '[x] All packed: 42 sessions, 120 chat files, 900 MB.',
     'Your transfer folder is on your Desktop:  Claude Moove 2026-01-01 1200',
@@ -983,12 +1431,14 @@ function Invoke-Preview {   # draws each screen once, without doing anything, to
 }
 
 try {
+  foreach ($w in $What) { if (-not $labels.Contains($w)) { throw "-What doesn't know '$w'. Use any of: $($labels.Keys -join ', ')" } }
   switch ($Mode) { 'menu' { Invoke-Menu } 'pack' { Invoke-Pack } 'unpack' { Invoke-Unpack } 'preview' { Invoke-Preview } }
   Remove-Tree $script:work
   exit 0
 } catch {
   $msg = $_.Exception.Message
+  if ($Test) { $msg += ' | ' + ($_.ScriptStackTrace -replace '\s*\r?\n\s*', ' < ') }   # where it broke, for test runs
   Remove-Tree $script:work
-  Show-Fail $msg
+  if ($Json) { Write-Result ([ordered]@{ ok = $false; error = $msg; warnings = @($warnings) }) } else { Show-Fail $msg }
   exit 3
 }

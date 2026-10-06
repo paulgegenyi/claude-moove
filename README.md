@@ -5,8 +5,8 @@
 <h3 align="center">Your Claude chats are coming with you 🌼</h3>
 
 <p align="center">
-  Move every chat, session, setting, hook, skill and memory to a new Windows laptop with <b>one copy-paste</b>.<br>
-  A friendly little window walks you through it, and Clawd keeps you company in a field of flowers.
+  Move every chat, session, setting, hook, skill and memory to a new Windows laptop with <b>one copy-paste</b>,<br>
+  or let Claude do the whole move for you. Clawd keeps you company in a field of flowers.
 </p>
 
 <p align="center">
@@ -24,14 +24,14 @@
   <img src="docs/how-it-works.svg" width="720" alt="Pixel art: on the left a laptop showing a moving box, labelled 1 PACK. In the middle Clawd carries a box, labelled send it or carry it. On the right a laptop shows a pink heart, labelled 2 UNPACK">
 </p>
 
-**On the laptop you're leaving,** start Claude Moove (see below) and choose **1** (pack up). About five minutes later, everything is packed into a `Claude Moove <date>` folder on your Desktop. It then offers to **send** that folder straight to the new laptop with a one-time code like `joy-buzz-tiger`, or you carry it over on a pendrive.
+**On the laptop you're leaving,** start Claude Moove (see below) and choose **1** (pack up). Everything is ticked; untick what you'd rather leave behind and press Enter. A few minutes later it's all packed into a `Claude Moove <date>` folder on your Desktop. You can **send** that folder straight to the new laptop with a one-time code like `joy-buzz-tiger`, or carry it over on a pendrive.
 
-**On the laptop you're moving to,** start it the same way and choose **2** (move in). If you carried the folder, it finds it by itself, on the Desktop, in Downloads or on a plugged-in pendrive. If you're sending, it asks for the code.
+**On the laptop you're moving to,** start it the same way and choose **2** (move in). If you carried the folder, it finds it by itself, on the Desktop, in Downloads or on a plugged-in pendrive. If you're sending, it asks for the code. Before anything changes, it shows you what comes in and anything that changed on both laptops.
 
-That's the whole move 🎉
+That's the whole move 🎉 Claude can even stay open while you do it.
 
 <p align="center">
-  <img src="docs/screen-send.svg" width="700" alt="The PACK window at step 6 of 6, Send it to the new laptop: a one-time code in pink, joy-buzz-tiger, with the line to paste on the new laptop and the sending progress">
+  <img src="docs/screen-send.svg" width="700" alt="The PACK window at step 4 of 4, Send it to the new laptop: a one-time code in pink, joy-buzz-tiger, with the line to paste on the new laptop and the sending progress">
 </p>
 
 ## Start it
@@ -70,26 +70,42 @@ Not yet: Claude Moove is Windows only for now. **Pull requests are welcome!** Ha
 
 ## The little window
 
-Clawd sits at the top the whole way. He walks while things are busy, and a tiny flower bed blooms as each step is done.
+No wizard, no "press Enter to continue". You get one screen with everything ticked: type a number to change something, and press Enter to go. Clawd sits at the top the whole way, walking while things are busy.
 
 <p align="center">
-  <img src="docs/screen-pack.svg" width="700" alt="The PACK window at step 4 of 5, Zip it up: Clawd at the top, a blooming flower progress bar, finished steps ticked off, and the zip progress">
+  <img src="docs/screen-pack.svg" width="700" alt="The PACK window: Clawd at the top, a ticked list of what comes along (chats and sessions, settings and instructions, memory, project Claude files; the sidebar layout waits until Claude is closed), a choice between sending with a code and carrying it on a pendrive, and a heads-up about a project with changes not on GitHub yet">
 </p>
 
 It does the fiddly parts for you:
-- It closes Claude.
+- It works with Claude still open, and says what has to wait until Claude is closed. Press C and it closes Claude for you.
 - It opens the download page if Claude isn't installed yet.
 - It checks you're signed in to the same account.
 - It offers to install Node.js and Git.
 - It brings your projects back from GitHub.
 
-When something doesn't match, it fixes it and tells you exactly what it did:
+When something changed on both laptops, like your `CLAUDE.md`, nothing gets overwritten blindly. Like git, it shows you, and you pick what to keep:
 
 <p align="center">
-  <img src="docs/screen-unpack.svg" width="700" alt="The UNPACK window at step 5 of 7: it rewrites the old user folder and Desktop paths to the new ones, adds 38 sessions, updates 3 that were newer on the other laptop, and keeps both copies of 1 chat used on both laptops">
+  <img src="docs/screen-unpack.svg" width="700" alt="The UNPACK window: where the packed stuff came from, a note that this PC's own chats stay, the old and new user folder paths it fixes, a ticked list of what comes in, and three files changed on both laptops, each with a choice: keep both and let Claude merge them, take the old laptop's, or keep this PC's">
 </p>
 
 A new Windows user name, or a Desktop that OneDrive moved, is no problem. Every path gets rewritten, so your sessions open and your hooks keep working.
+
+## Let Claude do it
+
+Claude Moove is also a Claude skill. Claude runs the same move for you, and when a file changed on both laptops, it reads both versions and merges them, so you don't have to choose.
+
+**Add it** in one of two ways:
+- Start Claude Moove (see [Start it](#start-it)) and choose **3**.
+- Or add it to Claude Code as a plugin:
+  ```
+  /plugin marketplace add paulgegenyi/claude-moove
+  /plugin install moove@claude-moove
+  ```
+
+**Use it:** type `/claude-moove`, or just ask: *"pack up my Claude stuff for my new laptop"*, or *"move my Claude stuff in"*.
+
+Claude is open while it works, so your chats and sidebar layout come in last. A small Claude Moove window waits, and they come in the moment you quit Claude.
 
 ## What comes along
 
@@ -98,6 +114,7 @@ A new Windows user name, or a Desktop that OneDrive moved, is no problem. Every 
 | Every chat and session, from the desktop app's Code tab and from Claude Code, with titles, stars and archive state | Your login: you just sign in again |
 | Your global `CLAUDE.md`, `~/AGENTS.md` if you keep one, `settings.json`, hooks, skills and plugins | Caches, logs and other temporary files |
 | Claude's memory, edit history for rewinds, Cowork sessions and your sidebar layout | Your project folders themselves. They come back from GitHub, or you copy them over |
+| The Claude files in your projects that GitHub doesn't have, like a `CLAUDE.local.md` or `.claude/settings.local.json` | |
 
 Your claude.ai chats already live online and show up as soon as you sign in.
 
@@ -109,8 +126,11 @@ Nothing gets lost, even if you kept working on both laptops.
 |---|---|
 | A chat is newer on one laptop | The newer copy wins |
 | The same chat was continued on both | You keep both. The other one appears as "… (other laptop)", and the first time you open either, Claude gets a one-time note about what happened in the other |
-| Settings or `CLAUDE.md` changed | The newer file wins. Anything replaced is saved in `~/.claude-moove-safety` first |
-| The new PC already has its own Claude chats | Nothing there is wiped: your chats are merged in next to its own, and it keeps its own sidebar layout |
+| `CLAUDE.md`, `AGENTS.md`, `settings.json` or a project's Claude files changed on both | You choose: keep this PC's, take the old laptop's, or keep both, and Claude offers to merge them next time you start it. With the skill, Claude merges them right away |
+| Other settings changed | The newer file wins |
+| The new PC already has its own Claude chats | Nothing there is wiped: your chats are merged in next to its own, and it keeps its own sidebar layout unless you tick it |
+
+Anything replaced is saved in `~/.claude-moove-safety` first.
 
 The exact rules are in [How it works](engine/README.md).
 
@@ -149,13 +169,19 @@ A few things to know:
 <details>
 <summary><b>Can it overwrite something newer on my new laptop?</b></summary>
 <br>
-No. Chats and files are only ever replaced by newer copies. Settings that get replaced are saved in <code>~/.claude-moove-safety</code> first.
+No. Chats are only ever replaced by longer versions of themselves. When <code>CLAUDE.md</code>, <code>AGENTS.md</code>, <code>settings.json</code> or a project's Claude files changed on both laptops, you choose what to keep; other settings go to the newer copy. Anything replaced is saved in <code>~/.claude-moove-safety</code> first.
+</details>
+
+<details>
+<summary><b>Do I have to close Claude?</b></summary>
+<br>
+No. Packing works with Claude open; only the sidebar layout needs it closed. When moving in, settings, memory and project files come in right away, and your chats and sidebar layout come in the moment you close Claude.
 </details>
 
 <details>
 <summary><b>What about my project folders?</b></summary>
 <br>
-UNPACK offers to download them from GitHub into the right places. If a project has changes that aren't on GitHub yet, PACK warns you, so you can commit them or copy the folder over yourself.
+UNPACK offers to download them from GitHub into the right places. The Claude files in them that GitHub doesn't have come along by themselves. If a project has other changes that aren't on GitHub yet, PACK warns you, so you can commit them or copy the folder over yourself.
 </details>
 
 <details>
@@ -180,7 +206,7 @@ Not yet. It's Windows only for now, and pull requests are very welcome (see <a h
 
 <img src="docs/clawd-small.svg" height="15" alt="Clawd"> &nbsp;**Clawd's tip:** do one trial unpack on the new laptop before you wipe the old one. Claude's internal files can change between versions, and it's nice to be sure.
 
-Project folders aren't packed, so uncommitted work only comes along if you copy those folders yourself.
+Project folders aren't packed, only their Claude files, so other uncommitted work only comes along if you push it to GitHub or copy those folders yourself.
 
 ## Contributing
 

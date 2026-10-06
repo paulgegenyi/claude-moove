@@ -3,7 +3,8 @@
 #   irm https://raw.githubusercontent.com/paulgegenyi/claude-moove/main/moove.ps1 | iex
 #
 # It downloads the latest Claude Moove into %LOCALAPPDATA%\Claude Moove and opens its menu (pack up this laptop,
-# or move in on this one). Nothing is installed and no browser download is involved, so Windows shows no warning.
+# move in on this one, or add the Claude skill). Nothing else is installed and no browser download is involved,
+# so Windows shows no warning.
 # Run from a cloned copy (powershell -ExecutionPolicy Bypass -File moove.ps1), it uses that copy instead.
 & {
   $ErrorActionPreference = 'Stop'
