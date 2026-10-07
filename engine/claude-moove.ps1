@@ -1081,7 +1081,8 @@ function Merge-Sessions([string]$sa) {
   foreach ($f in Get-ChildItem -LiteralPath $sessS -Recurse -File -Filter 'local_*.json' -ErrorAction SilentlyContinue) {
     $t = $sessT + $f.FullName.Substring($sessS.Length)
     if (-not (Test-Path -LiteralPath $t)) { $script:count.new++; continue }
-    $I = Read-Json $f.FullName; $L = Read-Json $t
+    $I = Read-Json $f.FullName; $L = $null; try { $L = Read-Json $t } catch {}   # Move-Chats already left out the old laptop's damaged ones
+    if (-not $L) { $f.LastWriteTimeUtc = [DateTime]::UtcNow; $script:count.updated++; continue }   # this laptop's is damaged: the old laptop's replaces it
     switch (Get-SessionRelation $I $L) {
       'incoming' { $f.LastWriteTimeUtc = [DateTime]::UtcNow; $script:count.updated++ }
       'local' { Remove-Item -LiteralPath $f.FullName -Force; $script:count.kept++ }
@@ -1106,7 +1107,7 @@ function Merge-Sessions([string]$sa) {
   foreach ($f in Get-ChildItem -LiteralPath $sessS -Recurse -File -Filter 'archived-sessions.idx' -ErrorAction SilentlyContinue) {
     $t = $sessT + $f.FullName.Substring($sessS.Length)
     if (-not (Test-Path -LiteralPath $t)) { continue }
-    $all = @(@((Read-Json $f.FullName).archived) + @((Read-Json $t).archived) | Where-Object { $_ } | Sort-Object -Unique)
+    $all = @(@(foreach ($p in $f.FullName, $t) { try { (Read-Json $p).archived } catch {} }) | Where-Object { $_ } | Sort-Object -Unique)   # a damaged list counts as empty
     [IO.File]::WriteAllText($f.FullName, ([ordered]@{ v = 1; archived = $all } | ConvertTo-Json -Compress), $utf8)
     $f.LastWriteTimeUtc = [DateTime]::UtcNow
   }
@@ -1590,12 +1591,17 @@ function Move-Projects($P) {   # GitHub projects come down again, then everythin
 function Move-Chats($P) {   # needs Claude closed: the app keeps its session list in memory and writes it back
   $sh = $P.sh; $sa = $P.sa
   $referenced = New-Object 'System.Collections.Generic.HashSet[string]'
-  foreach ($dir in "$sa\claude-code-sessions", "$claudeDir\claude-code-sessions") {
+  $sessS = "$sa\claude-code-sessions"; $damaged = 0
+  foreach ($dir in $sessS, "$claudeDir\claude-code-sessions") {
     foreach ($f in Get-ChildItem -LiteralPath $dir -Recurse -File -Filter 'local_*.json' -ErrorAction SilentlyContinue) {
-      $j = Read-Json $f.FullName
+      $j = $null; try { $j = Read-Json $f.FullName } catch {}
+      if (-not $j) {   # damaged, say all zeros after a crash: the app skips it too, so the old laptop's isn't brought in
+        $damaged++; if ($dir -eq $sessS) { Remove-Item -LiteralPath $f.FullName -Force }; continue
+      }
       foreach ($id in @($j.cliSessionId) + @($j.priorCliSessionIds)) { if ($id) { [void]$referenced.Add($id) } }
     }
   }
+  if ($damaged) { $warnings.Add("Skipped $(Plural $damaged 'damaged session file') (unreadable, usually left by a crash). Claude skips them too.") }
   Merge-Transcripts $sh $referenced
   Merge-Sessions $sa
   Copy-Tree "$sh\.claude\projects" "$HomeDir\.claude\projects" 'Putting your chats in place...' @('/XD', 'memory') -Merge

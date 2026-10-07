@@ -69,7 +69,7 @@ Never packed: caches, telemetry, live-process files (`sessions`, `session-env`, 
 ## How unpack merges
 
 - **Chats.** Transcript files only ever grow, so if one laptop's copy is the start of the other's, the longer one wins. If both grew differently, meaning the same chat was used on both laptops, both are kept. This laptop's copy stays as it is. The other is added as a separate chat with a new ID, and its Code tab entry is titled "... (other laptop)".
-- **Code tab session list.** Each entry follows its chat. If one side rewound or forked into a new chat file, the side that moved on from an untouched copy of the other counts as newer. Anything archived on either laptop stays archived.
+- **Code tab session list.** Each entry follows its chat. If one side rewound or forked into a new chat file, the side that moved on from an untouched copy of the other counts as newer. Anything archived on either laptop stays archived. A session file that can't be read (all zeros after a crash, say) is skipped, as the app does, with a warning: the old laptop's isn't brought in, a damaged one here is replaced by the old laptop's copy if it has one, and a damaged archive list counts as empty.
 - **Files people care about** (`~/.claude/CLAUDE.md`, `~/AGENTS.md`, `~/.claude/settings.json`, and the files of projects already here). New ones are copied. One that exists on both sides and differs is never overwritten blindly; it gets a choice:
   - `mine`: keep this PC's.
   - `theirs`: take the old laptop's. This PC's is saved in the safety folder first.
