@@ -120,14 +120,16 @@ A new Windows user name, or a Desktop that OneDrive moved, is no problem. Every 
 
 | Choice | What happens |
 |---|---|
+| combine, old laptop wins | Only for `settings.json`. Both laptops' settings in one file: where both have the same setting, the old laptop's wins, and anything only this PC has stays, like a plugin you switched on here. Hooks come as the old laptop's whole set (untick Hooks to keep this PC's) |
 | keep both, Claude merges them | This PC's stays in use, and the old laptop's is saved next to it, for example as `CLAUDE.from-OLD-LAPTOP.md`. The next time you start Claude, it tells you and offers to merge the two |
 | keep this PC's | Nothing changes |
-| take the old laptop's | The old laptop's replaces this PC's, which is saved first |
+| take the old laptop's | The old laptop's replaces this PC's exactly, which is saved first |
 
 It suggests one for each file:
+- **combine** for `settings.json`
 - **the old laptop's** when this PC's copy is just a fresh install's, or exactly what's on GitHub
 - **both** for instruction files like `CLAUDE.md`
-- **the newer one** for settings
+- **the newer one** for any other project file
 
 Once you've settled a file, it doesn't ask about the same versions again.
 
@@ -226,9 +228,11 @@ Nothing gets lost, even if you kept working on both laptops.
 |---|---|
 | A chat is newer on one laptop | The newer copy wins |
 | The same chat was continued on both | You keep both. The other one appears as "… (other laptop)", and the first time you open either, Claude gets a one-time note about what happened in the other |
-| `CLAUDE.md`, `AGENTS.md`, `settings.json` or a project's Claude files changed on both | You choose: keep this PC's, take the old laptop's, or keep both, and Claude offers to merge them next time you start it. With the skill, Claude merges them right away |
+| `CLAUDE.md`, `AGENTS.md` or a project's Claude files changed on both | You choose: keep this PC's, take the old laptop's, or keep both, and Claude offers to merge them next time you start it. With the skill, Claude merges them right away |
+| `settings.json` changed on both | Combined unless you choose otherwise: the old laptop's settings win, and what only this PC has stays (plugins switched on here, for example) |
 | Other files changed in a project that's on both laptops (code, `.env`) | One choice per project: keep this PC's copies or take the old laptop's |
-| Other settings changed | The newer file wins |
+| Other settings changed (trusted folders, MCP servers, app preferences, plugin lists) | Combined the same way. This PC keeps its own IDs, sign-in and device pairing |
+| Prompt history on both | Both laptops' prompts, in time order |
 | The new PC already has its own Claude chats | Nothing there is wiped: your chats are merged in next to its own, and it keeps its own sidebar layout unless you tick it |
 
 Anything replaced is saved in `~/.claude-moove-safety` first. The exact rules are in [How it works](engine/README.md).
@@ -263,7 +267,7 @@ Whoever types the code first gets the folder, so don't post it anywhere.
 <details>
 <summary><b>Can it overwrite something newer on my new laptop?</b></summary>
 <br>
-No. Chats are only ever replaced by longer versions of themselves. When <code>CLAUDE.md</code>, <code>AGENTS.md</code>, <code>settings.json</code> or a project's Claude files changed on both laptops, you choose what to keep; other settings go to the newer copy. Anything replaced is saved in <code>~/.claude-moove-safety</code> first.
+No. Chats are only ever replaced by longer versions of themselves. When <code>CLAUDE.md</code>, <code>AGENTS.md</code>, <code>settings.json</code> or a project's Claude files changed on both laptops, you choose what to keep. Other settings are combined: the old laptop's win where both have the same one, and anything only this PC has stays. Anything replaced is saved in <code>~/.claude-moove-safety</code> first.
 </details>
 
 <details>

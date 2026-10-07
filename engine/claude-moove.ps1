@@ -303,6 +303,86 @@ function New-WorkDir {   # short path, so deep chat folders stay under Windows' 
   throw "Couldn't make a temporary folder."
 }
 function Read-Json([string]$path) { [IO.File]::ReadAllText($path) | ConvertFrom-Json }
+
+# Settings files that get combined are read into case-sensitive dictionaries: ConvertFrom-Json refuses a .claude.json
+# that holds two folders whose names differ only in case, which Claude writes. They're written back the way Claude writes them.
+Add-Type -AssemblyName System.Web.Extensions
+function New-JsonMap { New-Object 'System.Collections.Generic.Dictionary[string,object]' }
+function Read-JsonMap([string]$path) {
+  $text = [IO.File]::ReadAllText($path)
+  if (-not $text.Trim()) { return New-JsonMap }
+  $js = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+  $js.MaxJsonLength = [int]::MaxValue; $js.RecursionLimit = 1000
+  $j = $js.DeserializeObject($text)
+  if ($j -isnot [Collections.IDictionary]) { throw "$path doesn't hold a JSON object." }
+  $j
+}
+# Only the escapes JSON needs, so hook commands keep their && and >
+$jsonEscapes = New-Object regex '[\x00-\x1f"\\]', 'Compiled'
+$jsonEscape = [Text.RegularExpressions.MatchEvaluator] {
+  param($m)
+  switch ([int]$m.Value[0]) { 34 { '\"' } 92 { '\\' } 10 { '\n' } 13 { '\r' } 9 { '\t' } 8 { '\b' } 12 { '\f' } default { '\u{0:x4}' -f $_ } }
+}
+$epoch = New-Object DateTime 1970, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc)
+function Format-JsonString([string]$s) { '"' + $jsonEscapes.Replace($s, $jsonEscape) + '"' }
+function Write-JsonText($v, [string]$pad = '') {   # two-space indents, like Claude's own files
+  if ($null -eq $v) { return 'null' }
+  if ($v -is [string]) { return Format-JsonString $v }
+  if ($v -is [bool]) { return $(if ($v) { 'true' } else { 'false' }) }
+  if ($v -is [datetime]) { return Format-JsonString ('/Date({0})/' -f [long]($v.ToUniversalTime() - $epoch).TotalMilliseconds) }   # read from a "\/Date(n)\/" string
+  $in = $pad + '  '
+  if ($v -is [Collections.IDictionary]) {
+    if (-not $v.Count) { return '{}' }
+    return "{`n" + (@(foreach ($k in $v.Keys) { $in + (Format-JsonString $k) + ': ' + (Write-JsonText $v[$k] $in) }) -join ",`n") + "`n$pad}"
+  }
+  if ($v -is [Collections.IList]) {
+    if (-not $v.Count) { return '[]' }
+    return "[`n" + (@(foreach ($x in $v) { $in + (Write-JsonText $x $in) }) -join ",`n") + "`n$pad]"
+  }
+  if ($v -is [double] -or $v -is [single]) { return $v.ToString('R', [Globalization.CultureInfo]::InvariantCulture) }
+  ([IFormattable]$v).ToString($null, [Globalization.CultureInfo]::InvariantCulture)
+}
+# Lists that are sets, so both laptops' entries can be kept: permission rules, allowed tools, MCP server switches, starred sessions,
+# allowed sites. Any other list (a command's arguments, say) depends on its order, so it comes whole from the old laptop.
+$setLists = 'allow', 'deny', 'ask', 'additionalDirectories', 'allowedTools', 'enabledMcpjsonServers', 'disabledMcpjsonServers', 'starred-local-code-sessions', 'launchPreviewAllowedOrigins'
+function Merge-Json($mine, $theirs, [string]$name = '') {   # the old laptop's value wins; whatever only this PC has stays
+  if ($mine -is [Collections.IDictionary] -and $theirs -is [Collections.IDictionary]) {
+    $out = New-JsonMap
+    foreach ($k in $theirs.Keys) { if ($mine.ContainsKey($k)) { $out[$k] = Merge-Json $mine[$k] $theirs[$k] $k } else { $out[$k] = $theirs[$k] } }
+    foreach ($k in $mine.Keys) { if (-not $out.ContainsKey($k)) { $out[$k] = $mine[$k] } }
+    return $out
+  }
+  if ($setLists -ccontains $name -and $mine -is [Array] -and $theirs -is [Array]) {   # both laptops' entries, each once, the old laptop's first
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]'; $list = New-Object System.Collections.Generic.List[object]
+    foreach ($x in @($theirs) + @($mine)) { if ($seen.Add((Write-JsonText $x))) { $list.Add($x) } }
+    return , $list.ToArray()
+  }
+  if ($name -cmatch '^has[A-Z]' -and $mine -is [bool] -and $mine -and $theirs -is [bool]) { return $true }   # trusted or set up once here: still so
+  if ($theirs -is [Array]) { return , $theirs }
+  $theirs
+}
+# This PC's own IDs, install, sign-in, device pairing and how far its Claude has updated its files, which must never become the old laptop's
+$machineKeys = @{ '.claude.json' = 'userID', 'machineID', 'anonymousId', 'oauthAccount', 'installMethod', 'autoUpdates', 'autoUpdatesProtectedForNative', 'firstStartTime', 'migrationVersion'
+  'claude_desktop_config.json' = 'preferences.remoteToolsDeviceName', 'preferences.chromeExtension' }
+function Set-MachineKeys($merged, $mine, [string]$file) {
+  foreach ($path in @($machineKeys[$file] | Where-Object { $_ })) {
+    $bits = @($path.Split('.')); $leaf = $bits[-1]; $m = $merged; $h = $mine
+    for ($i = 0; $i -lt $bits.Count - 1; $i++) {
+      $m = if ($m -is [Collections.IDictionary] -and $m.ContainsKey($bits[$i])) { $m[$bits[$i]] } else { $null }
+      $h = if ($h -is [Collections.IDictionary] -and $h.ContainsKey($bits[$i])) { $h[$bits[$i]] } else { $null }
+    }
+    if ($m -isnot [Collections.IDictionary]) { continue }
+    if ($h -is [Collections.IDictionary] -and $h.ContainsKey($leaf)) { $m[$leaf] = $h[$leaf] } else { [void]$m.Remove($leaf) }
+  }
+}
+function Write-TextFile([string]$path, [string]$text) {   # WriteAllText refuses a hidden or read-only file (Copy-Item -Force didn't); its attributes stay
+  $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+  $odd = [IO.FileAttributes]'Hidden, ReadOnly'
+  $attr = if ($item -and ($item.Attributes -band $odd)) { $item.Attributes }
+  if ($attr) { $rest = $attr -band -bnot $odd; $item.Attributes = $(if ($rest) { $rest } else { [IO.FileAttributes]::Normal }) }
+  [IO.File]::WriteAllText($path, $text, $utf8)
+  if ($attr) { (Get-Item -LiteralPath $path -Force).Attributes = $attr }
+}
 function Invoke-Git([string]$dir) {
   $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
   try { $o = & git -C $dir -c core.quotepath=off @args 2>$null; if ($LASTEXITCODE -eq 0) { $o } } finally { $ErrorActionPreference = $old }   # file names as they are, not escaped
@@ -1157,8 +1237,13 @@ function New-FileItem([string]$in, [string]$dest, [string]$label, [string]$cat, 
   $active = $rel -match '^\.claude\\(commands|agents|skills|rules|output-styles)\\'
   $bothOk = ($cat -ne 'projects') -or (-not $active -and (($leaf -match '\.(md|json)$') -or ($leaf -like '.env*')))
   # origin is the old laptop's file as packed; incoming is what would be used, which for settings.json is assembled per part
-  [pscustomobject]@{ id = $dest; label = $label; incoming = $in; origin = $in; dest = $dest; cat = $cat; project = $proj; rel = $rel; bothOk = $bothOk
+  # combined is set for settings.json: both laptops' settings in one file
+  [pscustomobject]@{ id = $dest; label = $label; incoming = $in; origin = $in; combined = $null; dest = $dest; cat = $cat; project = $proj; rel = $rel; bothOk = $bothOk
     group = $null; fixed = $false; state = ''; hash = ''; key = ''; newer = ''; default = ''; choice = '' }
+}
+function Get-Options($f) {   # a file's choices, in the order its number cycles through them
+  if ($f.combined) { return @('combine', 'theirs', 'mine') + @(if ($f.bothOk) { 'both' }) }
+  @(if ($f.bothOk) { 'both' }) + @('mine', 'theirs')
 }
 function Test-Pristine($f) {   # this PC's copy of a project file is just what's committed to git
   if (-not $script:hasGit) { return $false }
@@ -1170,39 +1255,65 @@ function Update-FileState($f) {   # copy (not here yet), same, settled (in an ea
   if (-not (Test-Path -LiteralPath $f.dest)) { return }
   $f.hash = (Get-FileHash -LiteralPath $f.incoming).Hash
   $f.key = if ($f.origin -ne $f.incoming) { (Get-FileHash -LiteralPath $f.origin).Hash } else { $f.hash }   # remembered once settled
-  if ((Get-FileHash -LiteralPath $f.dest).Hash -eq $f.hash) { $f.state = 'same'; return }
+  $here = (Get-FileHash -LiteralPath $f.dest).Hash
+  if ($here -eq $f.hash -or ($f.combined -and $here -eq (Get-FileHash -LiteralPath $f.combined).Hash)) { $f.state = 'same'; return }
   if ($script:resolved[$f.dest] -eq $f.key) { $f.state = 'settled'; return }
   $f.state = 'conflict'
   $f.newer = if ((Get-Item -LiteralPath $f.incoming -Force).LastWriteTimeUtc -gt (Get-Item -LiteralPath $f.dest -Force).LastWriteTimeUtc) { 'theirs' } else { 'mine' }
-  # A brand-new install's settings, or a project file that's just what GitHub has, give way (a project set up here is deliberate).
+  # settings.json is combined: the old laptop's settings win, and what only this PC has stays.
+  # A brand-new install's instructions, or a project file that's just what GitHub has, give way (a project set up here is deliberate).
   # Instructions are kept both; the rest goes newer-wins.
-  if (($script:firstMoove -and -not $f.project) -or ($f.project -and (Test-Pristine $f))) { $f.default = 'theirs' }
+  if ($f.combined) { $f.default = 'combine' }
+  elseif (($script:firstMoove -and -not $f.project) -or ($f.project -and (Test-Pristine $f))) { $f.default = 'theirs' }
   elseif ($f.bothOk -and $f.dest.EndsWith('.md')) { $f.default = 'both' }
   else { $f.default = $f.newer }
-  if (-not $f.choice) { $f.choice = $f.default }
+  if (-not $f.choice -or ($f.choice -eq 'combine' -and -not $f.combined)) { $f.choice = $f.default }
 }
 function Build-SettingsJson($P, $want) {   # settings.json from both laptops: each part (hooks, plugins, the rest) from where it's wanted
+  # Two versions: theirs (the old laptop's, as ticked) and combined (the old laptop's settings win, whatever only this PC has stays)
   $in = "$($P.sh)\.claude\settings.json"; $lo = "$HomeDir\.claude\settings.json"
   if (-not (Test-Path -LiteralPath $in)) { return $null }
   $old = @{ rest = ($want.settings -and $P.packed -contains 'settings') }
   foreach ($k in $partKeys.Keys) { $old[$k] = [bool]$want[$k] }
-  if ($old.rest -and -not @($partKeys.Keys | Where-Object { -not $old[$_] }).Count) { return $in }   # all of it from the old laptop, as it is
+  $whole = $old.rest -and -not @($partKeys.Keys | Where-Object { -not $old[$_] }).Count   # all of it from the old laptop
   if (-not $old.rest -and -not @($partKeys.Keys | Where-Object { $old[$_] }).Count) { return $null }   # none of it
-  $fromOld = Read-Json $in
-  $fromHere = if (Test-Path -LiteralPath $lo) { Read-Json $lo } else { New-Object psobject }
-  $base = if ($old.rest) { $fromOld } else { $fromHere }
-  foreach ($k in $partKeys.Keys) {
-    $src = if ($old[$k]) { $fromOld } else { $fromHere }
-    foreach ($key in $partKeys[$k]) {
-      $v = $src.PSObject.Properties[$key]; $has = [bool]$v; $val = if ($has) { $v.Value } else { $null }   # read before $base changes: it may be the same object
-      $base.PSObject.Properties.Remove($key)
-      if ($has) { $base | Add-Member -NotePropertyName $key -NotePropertyValue $val -Force }
+  try { $fromOld = Read-JsonMap $in } catch {
+    if ($whole) { return [pscustomobject]@{ theirs = $in; combined = $null } }
+    $warnings.Add("The old laptop's settings.json couldn't be read, so it stayed behind."); return $null
+  }
+  $fromHere = New-JsonMap
+  if (Test-Path -LiteralPath $lo) {
+    try { $fromHere = Read-JsonMap $lo } catch {   # a comment or a stray comma, say: this PC's is kept or replaced whole, never combined or added to
+      $msg = "This PC's settings.json couldn't be read (a comment or a stray comma, maybe), so it wasn't combined with the old laptop's."
+      if (-not $warnings.Contains($msg)) { $warnings.Add($msg) }
+      if ($whole) { return [pscustomobject]@{ theirs = $in; combined = $null } }
+      return $null
     }
   }
-  $out = "$($P.work)\settings.assembled.json"
-  [IO.File]::WriteAllText($out, ($base | ConvertTo-Json -Depth 64), $utf8)
-  (Get-Item -LiteralPath $out).LastWriteTimeUtc = (Get-Item -LiteralPath $in).LastWriteTimeUtc
-  $out
+  $base = if ($old.rest) { $fromOld } else { $fromHere }
+  $theirs = New-JsonMap; foreach ($k in $base.Keys) { $theirs[$k] = $base[$k] }
+  $combined = Merge-Json $fromHere $(if ($old.rest) { $fromOld } else { New-JsonMap })
+  foreach ($k in $partKeys.Keys) {
+    foreach ($key in $partKeys[$k]) {
+      $o = $old[$k] -and $fromOld.ContainsKey($key); $h = $fromHere.ContainsKey($key)
+      [void]$theirs.Remove($key); [void]$combined.Remove($key)
+      $src = if ($old[$k]) { $fromOld } else { $fromHere }
+      if ($src.ContainsKey($key)) { $theirs[$key] = $src[$key] }
+      # combined: the old laptop's hooks come as a whole set; plugin switches and marketplaces one by one, so one switched on only here stays on
+      if (-not $o) { if ($h) { $combined[$key] = $fromHere[$key] } }
+      elseif ($k -eq 'hooks' -or -not $h) { $combined[$key] = $fromOld[$key] }
+      else { $combined[$key] = Merge-Json $fromHere[$key] $fromOld[$key] }
+    }
+  }
+  $r = [ordered]@{}
+  foreach ($name in 'theirs', 'combined') {
+    $out = "$($P.work)\settings.$name.json"
+    [IO.File]::WriteAllText($out, (Write-JsonText $(if ($name -eq 'theirs') { $theirs } else { $combined })) + "`n", $utf8)
+    (Get-Item -LiteralPath $out).LastWriteTimeUtc = (Get-Item -LiteralPath $in).LastWriteTimeUtc
+    $r[$name] = $out
+  }
+  if ($whole) { $r.theirs = $in }   # the old laptop's file as it is
+  [pscustomobject]$r
 }
 
 function Get-UnpackPlan([string]$src) {   # unpacks the data next to this PC's, then works out what can come in and what differs
@@ -1289,7 +1400,10 @@ function Get-UnpackPlan([string]$src) {   # unpacks the data next to this PC's, 
   }
   if ($has.settings) {
     $in = Build-SettingsJson $P $(if ($want.settings) { $want } else { @{ settings = $true; hooks = $want.hooks; plugins = $want.plugins } })
-    if ($in) { $item = New-FileItem $in (Join-Path $HomeDir '.claude\settings.json') 'settings.json (global)' 'settings' $null '.claude\settings.json'; $item.origin = "$c\settings.json"; $files.Add($item) }
+    if ($in) {
+      $item = New-FileItem $in.theirs (Join-Path $HomeDir '.claude\settings.json') 'settings.json (global)' 'settings' $null '.claude\settings.json'
+      $item.origin = "$c\settings.json"; $item.combined = $in.combined; $files.Add($item)
+    }
   }
   foreach ($pr in $plist) {   # a project that's already here: its files are compared one by one
     if (-not $pr.here -or -not $pr.hasFiles) { continue }
@@ -1318,9 +1432,9 @@ function Get-UnpackPlan([string]$src) {   # unpacks the data next to this PC's, 
     foreach ($f in $files) {
       $v = $picked[$f.id]
       if (-not $v) { continue }
-      if ($v -eq 'mine' -or $v -eq 'theirs' -or ($v -eq 'both' -and $f.bothOk)) { $f.choice = $v.ToLower(); $f.fixed = $true }
+      if ($v -in (Get-Options $f)) { $f.choice = $v.ToLower(); $f.fixed = $true }
       elseif (Test-Path -LiteralPath $v -PathType Leaf) { $f.choice = [IO.Path]::GetFullPath($v); $f.fixed = $true }
-      else { $warnings.Add("Ignored the choice for $($f.label): '$v' isn't mine, theirs, both or a file.") }
+      else { $warnings.Add("Ignored the choice for $($f.label): '$v' isn't $((Get-Options $f) -join ', ') or a file.") }
     }
   }
   $P.pairs = $pairs; $P.livedIn = $livedIn; $P.projects = $plist; $P.files = $files; $P.groups = $groups; $P.items = $items; $P.lsHere = $lsHere
@@ -1337,7 +1451,7 @@ function Get-ShownGroups($P) {   # per project: the other files that differ, set
   @($P.groups.Values | Where-Object { $_.project.mode -ne 'none' })
 }
 function Get-ChoiceText([string]$c) {
-  switch ($c) { 'both' { 'keep both, Claude merges them' } 'mine' { "keep this PC's" } 'theirs' { "take the old laptop's" } default { 'use the merged version' } }
+  switch ($c) { 'combine' { 'combine, old laptop wins' } 'both' { 'keep both, Claude merges them' } 'mine' { "keep this PC's" } 'theirs' { "take the old laptop's" } default { 'use the merged version' } }
 }
 function Get-ProjectsInLine($plist) {   # the projects line on the move-in screen
   $going = @($plist | Where-Object { $_.mode -ne 'none' })
@@ -1427,8 +1541,9 @@ function Write-Plan($P) {   # -Plan: what would happen, with copies of the other
       if ($f.state -ne 'conflict') { continue }
       $i++; $copy = Join-Path $review ('{0:000}-{1}' -f $i, (Split-Path $f.dest -Leaf))
       Copy-Item -LiteralPath $f.incoming $copy -Force
-      [ordered]@{ id = $f.id; label = $f.label; kind = $f.cat; group = $(if ($f.group) { "$($f.group)\*" } else { $null }); mine = $f.dest; theirs = $copy; newer = $f.newer
-        suggested = $(if ($f.group) { $P.groups[$f.group].choice } else { $f.default }); choices = @(if ($f.bothOk) { 'mine', 'theirs', 'both' } else { 'mine', 'theirs' }) }
+      $both = $null; if ($f.combined) { $both = Join-Path $review ('{0:000}-combined-{1}' -f $i, (Split-Path $f.dest -Leaf)); Copy-Item -LiteralPath $f.combined $both -Force }
+      [ordered]@{ id = $f.id; label = $f.label; kind = $f.cat; group = $(if ($f.group) { "$($f.group)\*" } else { $null }); mine = $f.dest; theirs = $copy; combined = $both; newer = $f.newer
+        suggested = $(if ($f.group) { $P.groups[$f.group].choice } else { $f.default }); choices = @(Get-Options $f) }
     })
   $wanted = [ordered]@{}; foreach ($it in $P.items) { $wanted[$it.key] = [bool]$it.on }
   Write-Result ([ordered]@{
@@ -1452,7 +1567,7 @@ function Save-Safety([string]$dest) {   # a copy of a file before it's replaced,
   Copy-Item -LiteralPath $dest $keep -Force
   $script:replaced++
 }
-function Copy-Newer($f, [string]$dest) {   # one settings file: the newer copy wins (the packed one on a brand-new install)
+function Copy-Newer($f, [string]$dest) {   # one file that can't be combined: the newer copy wins (the packed one on a brand-new install)
   if (Test-Path -LiteralPath $dest) {
     if ((Get-FileHash -LiteralPath $dest).Hash -eq (Get-FileHash -LiteralPath $f.FullName).Hash) { return }
     if (-not $script:firstMoove -and (Get-Item -LiteralPath $dest -Force).LastWriteTimeUtc -ge $f.LastWriteTimeUtc) { return }
@@ -1461,18 +1576,50 @@ function Copy-Newer($f, [string]$dest) {   # one settings file: the newer copy w
   New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
   Copy-Item -LiteralPath $f.FullName $dest -Force
 }
+function Merge-SettingsFile($f, [string]$dest) {   # a .json settings file is combined: the old laptop's values win, whatever only this PC has stays
+  if ($f.Name -notlike '*.json') { Copy-Newer $f $dest; return }
+  $key = (Get-FileHash -LiteralPath $f.FullName).Hash
+  if ($script:resolved[$dest] -eq $key) { return }   # combined in an earlier move: what changed here since stays
+  $here = Test-Path -LiteralPath $dest
+  try { $mine = if ($here) { Read-JsonMap $dest } else { New-JsonMap }; $theirs = Read-JsonMap $f.FullName }
+  catch { Copy-Newer $f $dest; return }   # not readable as JSON: as before
+  if ($mine.ContainsKey('version') -and $theirs.ContainsKey('version') -and "$($mine['version'])" -cne "$($theirs['version'])") { Copy-Newer $f $dest; return }   # two formats of one file: as before
+  $merged = Merge-Json $mine $theirs
+  Set-MachineKeys $merged $mine $f.Name
+  $text = Write-JsonText $merged
+  if (-not $here -or $text -cne [IO.File]::ReadAllText($dest)) {
+    if ($here) { Save-Safety $dest } else { New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null }
+    Write-TextFile $dest $text
+  }
+  $script:settled[$dest] = $key
+}
+function Merge-History($f, [string]$dest) {   # the prompt history: both laptops' prompts, each once, in time order
+  if (-not (Test-Path -LiteralPath $dest)) { Copy-Newer $f $dest; return }
+  $seen = New-Object 'System.Collections.Generic.HashSet[string]'; $rows = New-Object System.Collections.Generic.List[object]; $i = 0
+  foreach ($file in $dest, $f.FullName) {
+    foreach ($l in [IO.File]::ReadAllLines($file)) {
+      if (-not $l.Trim() -or -not $seen.Add($l)) { continue }
+      $m = [regex]::Match($l, '"timestamp"\s*:\s*(\d+)')
+      $rows.Add([pscustomobject]@{ t = $(if ($m.Success) { [long]$m.Groups[1].Value } else { [long]0 }); i = $i++; l = $l })
+    }
+  }
+  $text = (@($rows | Sort-Object t, i | ForEach-Object { $_.l }) -join "`n") + "`n"
+  if ($text -ceq [IO.File]::ReadAllText($dest)) { return }
+  Save-Safety $dest
+  Write-TextFile $dest $text
+}
 function Use-Choice($f) {   # a file changed on both laptops, settled the way the user (or Claude) chose
   $c = $f.choice; $other = $null
   if ($c -eq 'both') {   # this PC's stays in use; the old laptop's sits next to it until Claude merges them
     $other = Join-Path (Split-Path $f.dest) ([IO.Path]::GetFileNameWithoutExtension($f.dest) + '.from-' + $script:fromTag + [IO.Path]::GetExtension($f.dest))
     Copy-Item -LiteralPath $f.incoming $other -Force
     $script:fileNotes.Add([ordered]@{ file = $f.dest; other = $other; from = $script:fromPc })
-  } elseif ($c -ne 'mine') {   # theirs, or a merged version
+  } elseif ($c -ne 'mine') {   # theirs, combined, or a merged version
     Save-Safety $f.dest
-    Copy-Item -LiteralPath $(if ($c -eq 'theirs') { $f.incoming } else { $c }) $f.dest -Force
+    Copy-Item -LiteralPath $(if ($c -eq 'theirs') { $f.incoming } elseif ($c -eq 'combine') { $f.combined } else { $c }) $f.dest -Force
   }
   $script:settled[$f.dest] = $f.key
-  if (-not $f.group) { $script:choicesMade.Add([ordered]@{ id = $f.id; label = $f.label; choice = $(if ($c -in 'mine', 'theirs', 'both') { $c } else { 'merged' }); otherCopy = $other }) }
+  if (-not $f.group) { $script:choicesMade.Add([ordered]@{ id = $f.id; label = $f.label; choice = $(if ($c -in 'mine', 'theirs', 'both', 'combine') { $c } else { 'merged' }); otherCopy = $other }) }
 }
 function Use-File($f) {   # $true if the file came in or was settled
   Update-FileState $f   # looks again: something may have changed since the screen
@@ -1481,8 +1628,9 @@ function Use-File($f) {   # $true if the file came in or was settled
   $false
 }
 function Use-PartialSettings($P, $want) {   # only hooks or plugins ticked: their switches go into this PC's settings.json
-  $assembled = Build-SettingsJson $P $want
-  if (-not $assembled) { return }
+  $built = Build-SettingsJson $P $want
+  if (-not $built) { return }
+  $assembled = if ($built.combined) { $built.combined } else { $built.theirs }
   $dest = "$HomeDir\.claude\settings.json"
   if (Test-Path -LiteralPath $dest) {
     if ((Get-FileHash -LiteralPath $dest).Hash -eq (Get-FileHash -LiteralPath $assembled).Hash) { return }
@@ -1498,19 +1646,20 @@ function Move-Parts($P, $want, [switch]$SkipLive, [switch]$LiveOnly) {   # ~/.cl
       Copy-Tree "$c\rules" "$HomeDir\.claude\rules" 'Putting your rules in place...' -Merge
     }
     foreach ($k in 'hooks', 'skills') { if ($want[$k]) { foreach ($d in $partDirs[$k]) { Copy-Tree "$c\$d" "$HomeDir\.claude\$d" "Putting your $(Get-Lower $k) in place..." -Merge } } }
-    if ($want.plugins) {   # plugin lists go newer-wins with a safety copy; the plugins themselves file by file
+    if ($want.plugins) {   # plugin lists are combined with a safety copy; the plugins themselves file by file
       $lists = @(Get-ChildItem -LiteralPath "$c\plugins" -File -Filter *.json -Force -ErrorAction SilentlyContinue)
       Copy-Tree "$c\plugins" "$HomeDir\.claude\plugins" 'Putting your plugins in place...' (@('/XF') + @($lists | ForEach-Object { Q $_.FullName })) -Merge
-      foreach ($f in $lists) { Copy-Newer $f "$HomeDir\.claude\plugins\$($f.Name)" }
+      foreach ($f in $lists) { Merge-SettingsFile $f "$HomeDir\.claude\plugins\$($f.Name)" }
     }
     if ($want.settings) {   # the rest of ~/.claude; its loose files are handled below
       $parts = @($partDirs.Values | ForEach-Object { $_ })
       Copy-Tree $c "$HomeDir\.claude" 'Putting your settings in place...' (
         @('/XD') + @(($chatDirs + $parts) | ForEach-Object { Q "$c\$_" }) + @('/XF') + @(Get-ChildItem -LiteralPath $c -File -Force -ErrorAction SilentlyContinue | ForEach-Object { Q $_.FullName })) -Merge
-      foreach ($f in $P.files) { if ($f.cat -eq 'settings') { [void](Use-File $f) } }
+      $built = Build-SettingsJson $P $want   # from this PC's settings.json as it is now, which may have changed since the screen
+      foreach ($f in $P.files) { if ($f.cat -eq 'settings') { if ($built) { $f.incoming = $built.theirs; $f.combined = $built.combined }; [void](Use-File $f) } }
     } elseif ($want.hooks -or $want.plugins) { Use-PartialSettings $P $want }
   }
-  if ($want.settings) {   # loose settings files: newer wins; the ones a running Claude rewrites wait until it's closed
+  if ($want.settings) {   # loose settings files: combined; the ones a running Claude rewrites wait until it's closed
     $loose = @(Get-ChildItem -LiteralPath $c -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin 'CLAUDE.md', 'settings.json', 'history.jsonl' }) +
       @(Get-ChildItem -LiteralPath $P.sh -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'AGENTS.md' }) +
       @(Get-Item -LiteralPath "$sa\claude_desktop_config.json" -Force -ErrorAction SilentlyContinue)
@@ -1518,7 +1667,7 @@ function Move-Parts($P, $want, [switch]$SkipLive, [switch]$LiveOnly) {   # ~/.cl
       $live = $liveNames -contains $f.Name
       if (($SkipLive -and $live) -or ($LiveOnly -and -not $live)) { continue }
       $dest = if ($f.FullName.StartsWith($sa)) { $claudeDir + $f.FullName.Substring($sa.Length) } else { $HomeDir + $f.FullName.Substring($P.sh.Length) }
-      Copy-Newer $f $dest
+      Merge-SettingsFile $f $dest
     }
   }
 }
@@ -1607,9 +1756,8 @@ function Move-Chats($P) {   # needs Claude closed: the app keeps its session lis
   Copy-Tree "$sh\.claude\projects" "$HomeDir\.claude\projects" 'Putting your chats in place...' @('/XD', 'memory') -Merge
   foreach ($d in $chatDirs) { if ($d -ne 'projects') { Copy-Tree "$sh\.claude\$d" "$HomeDir\.claude\$d" 'Putting your chats in place...' -Merge } }
   foreach ($d in $appChats) { Copy-Tree "$sa\$d" "$claudeDir\$d" "Putting the app's session list in place..." -Merge }
-  foreach ($f in @(Get-Item -LiteralPath "$sh\.claude\history.jsonl", "$sa\git-worktrees.json" -Force -ErrorAction SilentlyContinue)) {
-    Copy-Newer $f $(if ($f.Name -eq 'history.jsonl') { "$HomeDir\.claude\history.jsonl" } else { "$claudeDir\git-worktrees.json" })
-  }
+  foreach ($f in @(Get-Item -LiteralPath "$sh\.claude\history.jsonl" -Force -ErrorAction SilentlyContinue)) { Merge-History $f "$HomeDir\.claude\history.jsonl" }
+  foreach ($f in @(Get-Item -LiteralPath "$sa\git-worktrees.json" -Force -ErrorAction SilentlyContinue)) { Merge-SettingsFile $f "$claudeDir\git-worktrees.json" }
   $cnt = $script:count
   Put '   [x] Your chats are in.' ok
   if ($cnt.new) { Put "   [x] Added from your old laptop: $(Plural $cnt.new 'session')." ok }
@@ -1657,7 +1805,6 @@ function Invoke-MoveIn($P) {
   $script:count = @{ new = 0; updated = 0; kept = 0; both = 0 }
   $script:fromPc = if ($P.mf.computer) { [string]$P.mf.computer } else { 'other laptop' }
   $script:fromTag = $script:fromPc -replace '[^A-Za-z0-9]+', '-'
-  if ($want.settings) { $assembled = Build-SettingsJson $P $want; foreach ($f in $P.files) { if ($f.cat -eq 'settings' -and $assembled) { $f.incoming = $assembled } } }   # with the final picks
   foreach ($f in $P.files) { if ($f.group -and -not $f.fixed -and $P.groups.Contains($f.group)) { $f.choice = $P.groups[$f.group].choice } }
   if ($WhenClosed -and (Test-ClaudeOpen)) {
     Show-Top 'Close Claude, and the rest comes in.'
@@ -1679,7 +1826,7 @@ function Invoke-MoveIn($P) {
     Put ('   [x] In: ' + (($parts | ForEach-Object { Get-Lower $_ }) -join ', ') + '.') ok
   }
   foreach ($c in $script:choicesMade) {
-    $how = switch ($c.choice) { 'both' { 'kept both; the old laptop''s is next to it as ' + (Split-Path $c.otherCopy -Leaf) } 'mine' { "kept this PC's" } 'theirs' { "took the old laptop's" } default { 'used the merged version' } }
+    $how = switch ($c.choice) { 'both' { 'kept both; the old laptop''s is next to it as ' + (Split-Path $c.otherCopy -Leaf) } 'combine' { "combined; the old laptop's settings won" } 'mine' { "kept this PC's" } 'theirs' { "took the old laptop's" } default { 'used the merged version' } }
     Put "   [x] $($c.label): $how." ok
   }
   if ($later) {   # these need Claude closed
@@ -1774,7 +1921,7 @@ function Invoke-Unpack {
         if ($it.key -eq 'projects') { Edit-Projects $P.projects 'Show-ProjectsIn' } else { $it.on = -not $it.on }
       } elseif ($k -le $ni + $nc) {
         $f = $shown[$k - $ni - 1]
-        $opts = if ($f.bothOk) { @('both', 'mine', 'theirs') } else { @('mine', 'theirs') }
+        $opts = @(Get-Options $f)
         $f.choice = $opts[([array]::IndexOf($opts, $f.choice) + 1) % $opts.Count]
       } else { $g = $groups[$k - $ni - $nc - 1]; $g.choice = if ($g.choice -eq 'mine') { 'theirs' } else { 'mine' } }
     }
@@ -1909,7 +2056,7 @@ function Invoke-Preview {   # draws each screen once, without doing anything, to
       [pscustomobject]@{ name = 'ml-experiments'; mode = 'none'; here = $false; kind = 'git' })
     files = @(
       (& $fake 'CLAUDE.md (global)' 'instructions' 'both' 'theirs'),
-      (& $fake 'settings.json (global)' 'settings' 'theirs' 'theirs'))
+      (& $fake 'settings.json (global)' 'settings' 'combine' 'theirs'))
     groups = [ordered]@{ 'C:\recipe-app' = [pscustomobject]@{ label = 'recipe-app: 3 other files'; choice = 'mine'; project = $proj
         files = @([pscustomobject]@{ rel = '.env' }, [pscustomobject]@{ rel = 'src\config.ts' }, [pscustomobject]@{ rel = 'data\seed.sql' }) } }
   }

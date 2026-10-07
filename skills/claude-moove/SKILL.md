@@ -47,13 +47,14 @@ A project is any folder the user chatted in (the git repo's top folder when it's
 
    Ask before downloading many projects.
 3. For each entry in `conflicts`, read `mine` (this PC's file, in use) and `theirs` (a copy of the old laptop's version), then decide:
+   - settings.json also comes with `combined`: the old laptop's settings win where both have the same one, whatever only this PC has stays (plugin switches, for example), and the hooks are the old laptop's whole set. Its suggested choice is `combine`. Keep it unless the user wants one side exactly, or something in it is clearly wrong; then start your merged file from it.
    - One contains everything the other has, or they say the same thing: choose that one (`mine` or `theirs`).
-   - Each has something the other lacks: write a merged file into the review folder next to `theirs` and use its path. Keep every instruction from both, drop duplicates, keep this PC's wording where both say the same thing, and fix paths to this PC's. For JSON settings, combine the keys (union hooks, permissions and plugin lists) and keep it valid JSON.
+   - Each has something the other lacks: write a merged file into the review folder next to `theirs` and use its path. Keep every instruction from both, drop duplicates, keep this PC's wording where both say the same thing, and fix paths to this PC's.
    - They truly contradict each other: ask the user which way to go.
    - `both` keeps this PC's version in use and saves the old laptop's next to it as `<name>.from-<PC>`. Use it only if the user wants to merge later.
 
    Entries with a `group` are the other files of a project that's already here (code, `.env` and such). Settle them together with the group's id (`<project path>\*`): `mine` keeps this PC's copies, `theirs` takes the old laptop's. Read individual ones only if the user asks; secrets like `.env` usually stay `mine` unless the user says otherwise. Tell the user in one line per file or group what you'll do, and wait for a yes on anything that isn't obvious.
-4. Write the choices as a JSON object, `{ "<id>": "mine" | "theirs" | "both" | "<path of merged file>" }`, using the ids exactly as given. Then run unpack with `-Yes -Json -From "<folder>" -Choices "<that file>"`, plus `-What` and `-Projects` if the user left anything out.
+4. Write the choices as a JSON object, `{ "<id>": "combine" | "mine" | "theirs" | "both" | "<path of merged file>" }`, using the ids exactly as given and only choices listed in that entry's `choices`. Then run unpack with `-Yes -Json -From "<folder>" -Choices "<that file>"`, plus `-What` and `-Projects` if the user left anything out.
 5. Report what came in:
    - sessions added, updated, unchanged and used on both laptops
    - the projects set up
@@ -69,6 +70,7 @@ A project is any folder the user chatted in (the git repo's top folder when it's
 - Nothing is lost on either side:
   - Chats are only replaced by longer versions of themselves.
   - A chat continued on both laptops is kept twice, and the other copy is titled "(other laptop)".
+  - Other settings (trusted folders, MCP servers, app preferences, plugin lists) are combined the same way without asking, and the prompt history keeps both laptops' prompts. This PC keeps its own IDs, sign-in and device pairing.
   - Replaced settings and files are saved in `~/.claude-moove-safety/<date>` first.
 - Login tokens never travel; the user signs in on the new laptop with the same account.
 - How it all works in detail: `engine/README.md` next to the engine.
