@@ -26,7 +26,7 @@
 
 **On the laptop you're leaving,** start Claude Moove (see below) and choose **1** (pack up). Everything is ticked; untick what you'd rather leave behind and press Enter. A few minutes later it's all packed into a `Claude Moove <date>` folder on your Desktop. You can **send** that folder straight to the new laptop with a one-time code like `joy-buzz-tiger`, or carry it over on a pendrive.
 
-**On the laptop you're moving to,** start it the same way and choose **2** (move in). If you carried the folder, it finds it by itself, on the Desktop, in Downloads or on a plugged-in pendrive. If you're sending, it asks for the code. Before anything changes, it shows you what comes in and anything that changed on both laptops.
+**On the laptop you're moving to,** start it the same way and choose **2** (move in). If you carried the folder, it finds it by itself, on the Desktop, in Downloads or on a plugged-in pendrive, and asks before using it. If you're sending, it asks for the code. Before anything changes, it shows you what comes in and anything that changed on both laptops.
 
 That's the whole move 🎉 Claude can even stay open while you do it. Or skip the window altogether and [let Claude do it](#let-claude-do-it).
 
@@ -100,7 +100,7 @@ Press **Enter** to start, or **Q** to quit without changing anything. A few minu
 
 ## Moving in
 
-On the laptop you're moving to, choose **2** in the menu, or double-click `2 - UNPACK (on the laptop you're moving to)` in the folder you carried. Claude Moove looks for your packed stuff by itself: next to the button, on the Desktop, in Downloads or Documents, or on a plugged-in pendrive. If it finds nothing, it asks for the code from your old laptop. Nothing changes until you press Enter.
+On the laptop you're moving to, choose **2** in the menu, or double-click `2 - UNPACK (on the laptop you're moving to)` in the folder you carried. Claude Moove looks for your packed stuff by itself: next to the button, on the Desktop, in Downloads or Documents, or on a plugged-in pendrive. If it finds a folder, it tells you where and which laptop it came from, and asks before using it (R receives one with a code instead). If it finds nothing, it asks for the code from your old laptop. Nothing changes until you press Enter.
 
 <p align="center">
   <img src="docs/screen-unpack.svg" width="700" alt="The UNPACK window: where the packed stuff came from, a note that this PC's own chats stay, the old and new user folder paths it fixes, a ticked list of what comes in, and three files changed on both laptops, each with a choice: keep both and let Claude merge them, take the old laptop's, or keep this PC's">

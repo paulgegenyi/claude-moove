@@ -264,7 +264,7 @@ function Show-Walk([int]$frame, [string]$text, [datetime]$t0) {   # one frame of
     Write-Host -NoNewline ("$E" + '7' + "$E[1;2H$E[$($ink.clawd)m" + $c[0] + "$E[2;2H" + $c[1] + "$E[3;2H" + $c[2] + "$E[0m$E" + '8')
   }
   $el = (Get-Date) - $t0
-  Write-Host -NoNewline ("`r   $text  " + ('{0}:{1:00}' -f [int][Math]::Floor($el.TotalMinutes), $el.Seconds) + '      ')
+  Write-Host -NoNewline ("`r" + ("   $text  " + ('{0}:{1:00}' -f [int][Math]::Floor($el.TotalMinutes), $el.Seconds)).PadRight(70))   # padded, so a shorter status covers a longer one
 }
 function Wait-Walking($proc, [scriptblock]$status, [scriptblock]$giveUp) {
   $frame = 0; $t0 = Get-Date
@@ -438,6 +438,21 @@ function Get-LastLine([string]$text) { $l = @(($text -split "[`r`n]+") | Where-O
 function Get-Percent([string]$text) { $m = [regex]::Matches($text, '(\d{1,3})%'); if ($m.Count) { $m[$m.Count - 1].Groups[1].Value + '%' } else { '' } }
 function New-LogPath([string]$kind) { Join-Path $env:TEMP ("claude-moove-$kind-" + [guid]::NewGuid().ToString('N') + '.log') }
 
+function Get-SendStatus([string]$text) {   # what croc is doing, from what it has printed: getting the folder ready, waiting for the code, or sending
+  $lines = @(($text -split "[`r`n]+") | Where-Object { $_.Trim() })
+  $at = -1; for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\s*Sending \(.*->') { $at = $i } }   # "Sending (this laptop->new laptop)": connected
+  if ($at -ge 0) {   # then a bar per file, like "claude-data.zip  44% |...| (141/315 MB, 680 MB/s)"
+    $bar = "$(@($lines | Select-Object -Skip ($at + 1) | Where-Object { $_ -match '\d%' }) | Select-Object -Last 1)"
+    $pc = [regex]::Match($bar, '(\d{1,3})%'); $speed = [regex]::Match($bar, '[\d.]+ ?[kMG]?B/s')
+    return 'Sending to the new laptop...' + $(if ($pc.Success) { '  ' + $pc.Value }) + $(if ($speed.Success) { ', ' + $speed.Value })
+  }
+  $last = if ($lines.Count) { $lines[-1] } else { '' }
+  if ($last -match '^\s*Hashing') {   # croc fingerprints the files first, at disk speed: nothing has left this laptop yet
+    $pc = [regex]::Match($last, '(\d{1,3})%')
+    return 'Getting the folder ready...' + $(if ($pc.Success) { '  ' + $pc.Value })
+  }
+  'Waiting for the new laptop to type the code...'
+}
 function Send-Folder([string]$folder) {   # returns $true once the new laptop has everything
   $croc = Get-Croc
   if (-not $croc) { return $false }
@@ -467,7 +482,7 @@ function Send-Folder([string]$folder) {   # returns $true once the new laptop ha
   Put "   If the new laptop can't connect, close this and carry the folder instead (it's on your Desktop)." dim
   if ($Test -or $Json) { Write-Host "MOOVE-CODE:$code" }   # for the Claude skill and unattended tests
   Gap
-  Wait-Walking $p { $pc = Get-Percent (Read-Log $log); if ($pc) { "Sending...  $pc" } else { 'Waiting for the new laptop to type the code...' } }
+  Wait-Walking $p { Get-SendStatus (Read-Log $log) }
   $ok = $p.ExitCode -eq 0
   $why = Get-LastLine (Read-Log $log)
   Remove-Log $log
@@ -1214,14 +1229,50 @@ function Update-Marker([hashtable]$set) {   # notes that this laptop packed or m
   New-Item -ItemType Directory -Force $claudeDir | Out-Null
   [IO.File]::WriteAllText($marker, ($all | ConvertTo-Json -Depth 5), $utf8)
 }
-function Find-Source {   # the transfer folder: -From, next to this engine, on this PC or a drive, or received with a code
+function Get-PlaceText([string]$path) {   # where a found folder is, in a few words
+  foreach ($pl in @(@($DesktopDir, 'on your Desktop'), @((Join-Path $HomeDir 'Downloads'), 'in your Downloads'), @($DocumentsDir, 'in your Documents'))) {
+    if ($pl[0] -and $path.StartsWith($pl[0].TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { return $pl[1] }
+  }
+  "on drive $($path.Substring(0, 2)) (a USB stick, say)"
+}
+function Show-Found([string]$folder, [string]$computer, [string]$packed, [int]$count) {
+  Put "   I found a packed Claude Moove folder $(Get-PlaceText $folder)." plain
+  if ($computer) { Put "   From $computer, packed $packed." plain }
+  Put "   $folder" dim
+  if ($count -gt 1) { Put "   It's the newest of the $count I found." dim }
+  Gap
+  Put '   Enter  use it' plain
+  Put '   R      receive one over the internet with a code instead' plain
+  Put '   Q      quit; nothing changes' plain
+}
+function Confirm-Found([string]$folder, [int]$count) {   # a packed folder that's already here: use it, receive one instead, or quit
+  $computer = ''; $packed = ''
+  try { $mf = Read-Json (Join-Path $folder 'engine\manifest.json'); $computer = [string]$mf.computer; $packed = ([datetime]$mf.created).ToString('yyyy-MM-dd HH:mm') } catch {}
+  Show-Found $folder $computer $packed $count
+  while ($true) {
+    $a = Read-Answer 'Your choice:'
+    if ($a -eq '') { return 'use' }
+    if ($a -eq 'R') { return 'receive' }
+    if ($a -eq 'Q') { return 'quit' }
+    Put "   I didn't get that one." warn
+  }
+}
+function Find-Source {   # the transfer folder: -From, next to this engine, on this PC or a drive (asked first), or received with a code
   if ($From) {
     $f = [IO.Path]::GetFullPath($From).TrimEnd('\')
     foreach ($d in $f, (Split-Path $f)) { if ($d -and (Test-Path -LiteralPath (Join-Path $d 'engine\claude-data.zip'))) { return $d } }
     throw "There's no packed Claude data in $From."
   }
   if ((Test-Path -LiteralPath (Join-Path $engine 'claude-data.zip')) -and (Test-Path -LiteralPath (Join-Path $engine 'manifest.json'))) { return $toolRoot }
-  if (-not $ReceiveCode) { $cand = @(Find-PackedFolders); if ($cand.Count) { return $cand[0].FullName } }
+  if (-not $ReceiveCode) {
+    $cand = @(Find-PackedFolders)
+    if ($cand.Count) {   # one already here: with someone at the keyboard, ask before using it
+      $how = if ($interactive) { Confirm-Found $cand[0].FullName $cand.Count } else { 'use' }
+      if ($how -eq 'use') { return $cand[0].FullName }
+      if ($how -eq 'quit') { return $null }
+      return Receive-Folder
+    }
+  }
   if (-not $interactive -and -not $ReceiveCode) { throw "Couldn't find a packed folder on this PC or a plugged-in drive. Name one with -From, or receive one with -ReceiveCode." }
   Put "   I couldn't find a packed folder on this PC or a plugged-in drive." plain
   Receive-Folder
@@ -1903,6 +1954,7 @@ function Invoke-Unpack {
   $script:doing = 'moving in on this laptop'; $script:steps = $null
   Show-Top 'Looking for your packed stuff...'
   $src = Find-Source
+  if (-not $src) { Put '   Nothing was changed.' dim; End-Wait; return }
   $P = Get-UnpackPlan $src
   $P.canReceive = $interactive -and -not $From -and -not $script:received -and ($src -ne $toolRoot)
   if ($Plan) { Write-Plan $P; return }
@@ -2030,7 +2082,13 @@ function Invoke-Preview {   # draws each screen once, without doing anything, to
   Put '   The code works once: only type it on your own laptop.' dim
   Put "   If the new laptop can't connect, close this and carry the folder instead (it's on your Desktop)." dim
   Gap
-  Put '   Sending...  47%  1:12' plain
+  Put '   Sending to the new laptop...  47%, 12.4 MB/s  1:12' plain
+
+  Write-Host '@@SCREEN Moving in: a packed folder is already on this laptop'
+  $script:doing = 'moving in on this laptop'; $script:steps = $null
+  Show-Top 'Looking for your packed stuff...'
+  Show-Found 'E:\Claude Moove 2026-10-07 2054' 'OLD-LAPTOP' '2026-10-07 20:54' 2
+  Gap; Put '   Your choice:' title
 
   Write-Host '@@SCREEN Moving in: pick what comes in, and settle what changed on both laptops'
   $script:doing = 'moving in on this laptop'; $script:steps = $null; $script:hasGit = $true

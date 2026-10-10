@@ -16,7 +16,7 @@ Start with the main [README](../README.md) for what Claude Moove does, how to us
 - **Where unpack finds its data,** in this order:
   1. `-From <folder>`
   2. next to its own engine (started from the transfer folder's button)
-  3. a `Claude Moove*` folder with `engine\claude-data.zip`, directly or one level down, on the Desktop, in Downloads or Documents, or at the root of any other drive (pendrives); the newest one is used, and the pick screen offers R to receive one with a code instead
+  3. a `Claude Moove*` folder with `engine\claude-data.zip`, directly or one level down, on the Desktop, in Downloads or Documents, or at the root of any other drive (pendrives). The newest one is offered first: the window says where it is and which laptop packed it when, then Enter uses it, R receives one with a code instead, and Q quits without changing anything. Runs without screens (`-Yes`, `-Json`) use it without asking. The pick screen also offers R.
   4. a croc code typed by the user, or `-ReceiveCode`
 
 ## The pick screens
@@ -138,7 +138,10 @@ The pack screen offers sending (S) or carrying (U). UNPACK receives when it can'
 - It uses [croc](https://github.com/schollz/croc) (MIT), version 10 or newer. If it's missing or too old, it is installed or upgraded with `winget` (`schollz.croc`), and only after the user agrees.
 - The transfer is end to end encrypted with the one-time code (a password-authenticated key exchange), and neither laptop opens a port. On the same network the two connect directly. Otherwise they meet on one of croc's relays: the sender picks the fastest one, and that choice is baked into the code.
 - **croc's free relays allow five new transfers per hour from one internet address** (croc's own README). A move needs one or two, but many test runs, or many people behind one address (offices, schools, hotels), hit it: the relay then answers "relay admission rate limited". The receiving window says so plainly and suggests waiting, a phone hotspot, or carrying the folder; the sending window says to carry the folder if the new laptop can't connect.
-- **Send:** `croc --ignore-stdin --disable-clipboard --internal-dns send "<folder>"`. The code is read from the `getcroc.com/?code=` line croc prints. The window shows the code and the steps for the new laptop, then Clawd walks while it sends.
+- **Send:** `croc --ignore-stdin --disable-clipboard --internal-dns send "<folder>"`. The code is read from the `getcroc.com/?code=` line croc prints. The window shows the code and the steps for the new laptop, then Clawd walks with a status read from croc's output:
+  - "Getting the folder ready" while croc fingerprints the files (its `Hashing` lines, at disk speed; nothing has left the laptop yet)
+  - "Waiting for the new laptop to type the code" from then on
+  - "Sending to the new laptop" only after croc names both ends of the connection (`Sending (<this laptop>-><new laptop>)`), with the current file's percentage and speed. The packed zip is nearly all of the folder, so its percentage is the one that matters.
 - **Receive:** `croc --ignore-stdin --yes --overwrite --internal-dns --out "<Desktop>\Claude Moove received <date>" <code>`.
   - The code must be letters, digits and dashes (5 to 64 characters), so it can never be read as a croc option.
   - On Windows croc takes the code as an argument; `CROC_SECRET` is ignored when receiving.
@@ -164,6 +167,8 @@ The pack screen offers sending (S) or carrying (U). UNPACK receives when it can'
   - sending: pack a tiny fake profile with `-Transfer send`, then unpack from a fresh copy of the tool (no data) with `-ReceiveCode` into another fake profile
   - a lived-in destination: its own chat, settings and sidebar layout must survive
   - the parts of settings.json: packing without hooks and plugins, moving in Settings without Hooks (this PC's hooks stay), only Hooks (added to this PC's settings), and everything when there are no plugins at all
+  - the sending window and a real send: `../tools/test-sending.ps1` checks the status line against croc's output for each stage, then sends a fake laptop's folder to another through a private croc relay on this PC
+  - a packed folder already on the new laptop: `../tools/test-found-folder.ps1` checks that move-in asks first, and that Q, R and Enter do what they say
   - combining settings: `../tools/test-settings-merge.ps1` packs a fake laptop and moves it onto a lived-in PC and a brand-new one, and tries `theirs` and `mine`. It checks plugin switches, trusted folders, folder names that differ only in case, this PC's IDs, prompt history, app preferences and `-Plan`, and that a second move-in changes nothing
   - which folders are projects: a terminal-only chat, a session inside a git worktree (its repo is the project), chats in a temp folder and in the user folder (not projects), the Desktop (Claude files only)
   - a GitHub project through a bare repo: unpushed commits on two branches, the checked-out branch, an ignored `.env`, an untracked and a changed file, a deleted file, `node_modules` and `dist` left behind; then the same project already on the new laptop with its own `.env` (group choice), `<project>\*` = theirs, and `-Projects app=github`
@@ -180,7 +185,7 @@ The pack screen offers sending (S) or carrying (U). UNPACK receives when it can'
 | `../moove.ps1` | The one-line launcher: fetch the latest copy (or use the clone), then open the menu |
 | `claude-moove.ps1` | Does all the work: `-Mode menu`, `pack`, `unpack` or `preview` |
 | `claude-moove-merge.mjs` | The one-time merge note hook, plus `--install [settings.json]` to register it |
-| `../tools/test-settings-merge.ps1` | Test: settings combined on fake laptops (see [Testing](#testing-without-touching-real-data)) |
+| `../tools/test-*.ps1` | Tests on fake laptops: sending, a folder found on the new laptop, combined settings, damaged session files (see [Testing](#testing-without-touching-real-data)) |
 | `../skills/claude-moove/SKILL.md` | The Claude skill: how Claude drives the engine and merges files changed on both laptops |
 | `../.claude-plugin/` | `marketplace.json` and `plugin.json`, so the repo installs as the `moove` plugin |
 | `manifest.json` (packed folders only) | Where things lived on the old laptop, the account, what was packed, and each project: its kind, choice, GitHub link, branch and commit |
