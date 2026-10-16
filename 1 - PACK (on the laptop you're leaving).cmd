@@ -6,9 +6,11 @@ REM  On the laptop you're LEAVING:     double-click "1 - PACK ..."   (this one)
 REM  On the laptop you're MOVING TO:   double-click "2 - UNPACK ..."
 REM
 REM  PACK makes a folder on your Desktop called "Claude Moove <date>".
-REM  Copy that whole folder to a USB stick (or Google Drive), open it on the
-REM  new laptop and double-click "2 - UNPACK". The window walks you through
-REM  every step and checks everything for you.
+REM  Copy that whole folder to your own USB stick (or let PACK send it,
+REM  encrypted), open it on the new laptop and double-click "2 - UNPACK".
+REM  The window walks you through every step and checks everything for you.
+REM  The folder holds your chats and the keys in your settings: keep it
+REM  private, never in a shared or cloud folder, and delete it afterwards.
 REM
 REM  Don't move or rename the "engine" folder next to this file.
 REM =========================================================================

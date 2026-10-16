@@ -72,5 +72,5 @@ A project is any folder the user chatted in (the git repo's top folder when it's
   - A chat continued on both laptops is kept twice, and the other copy is titled "(other laptop)".
   - Other settings (trusted folders, MCP servers, app preferences, plugin lists) are combined the same way without asking, and the prompt history keeps both laptops' prompts. This PC keeps its own IDs, sign-in and device pairing.
   - Replaced settings and files are saved in `~/.claude-moove-safety/<date>` first.
-- Login tokens never travel; the user signs in on the new laptop with the same account.
+- The Claude login (`.credentials.json`) never travels; the user signs in on the new laptop with the same account. The rest of the settings do travel, keys included: MCP servers with their tokens (in `~/.claude.json` and `claude_desktop_config.json`), keys in `settings.json`'s `env`, and with projects their git-ignored files such as `.env`. Tell the user to keep the packed folder private (their own USB stick or the encrypted send, not a shared or cloud folder) and to delete it once the new laptop is set up.
 - How it all works in detail: `engine/README.md` next to the engine.

@@ -249,7 +249,7 @@ Anything replaced is saved in `~/.claude-moove-safety` first. The exact rules ar
 <details>
 <summary><b>Does anything get uploaded?</b></summary>
 <br>
-Only if you choose to send it over the internet, and then it's encrypted end to end (see the next question). If you carry it, your data only goes wherever you take the folder. Either way, treat that folder like a diary and a key ring: it holds your full chat history and your projects' local files, `.env` secrets included. Delete it once the new laptop is set up.
+Only if you choose to send it over the internet, and then it's encrypted end to end (see the next question). If you carry it, your data only goes wherever you take the folder. Either way, treat that folder like a diary and a key ring: it holds your full chat history, the keys in your settings (your MCP servers' tokens, API keys in `settings.json`) and your projects' local files, `.env` secrets included. Keep it out of shared and cloud folders, and delete it once the new laptop is set up. Only your Claude login itself stays behind.
 </details>
 
 <details>

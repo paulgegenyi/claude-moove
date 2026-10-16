@@ -251,9 +251,12 @@ function End-Wait { Gap; Put '   Press any key to close this window.' dim; if ($
 function Start-Tool([string]$exe, [string]$argLine) {
   # Started through cmd, which sends its output to a log, so the process is ours from the start and its exit code is always
   # there (Start-Process can lose it when a tool finishes in an instant).
+  # cmd is taken from ComSpec and starts in Windows' system folder, so robocopy and tar are always Windows' own: cmd looks
+  # in its current folder first, and a file of the same name in the folder the engine was started from (a cloned repo
+  # Claude is working in, say) would otherwise run instead.
   $log = Join-Path $env:TEMP 'claude-moove-tool.log'
-  $psi = New-Object System.Diagnostics.ProcessStartInfo 'cmd.exe', ('/d /s /c "' + $exe + ' ' + $argLine + ' > "' + $log + '" 2>&1"')
-  $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+  $psi = New-Object System.Diagnostics.ProcessStartInfo $env:ComSpec, ('/d /s /c "' + $exe + ' ' + $argLine + ' > "' + $log + '" 2>&1"')
+  $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.WorkingDirectory = [Environment]::SystemDirectory
   [System.Diagnostics.Process]::Start($psi)
 }
 function Show-Walk([int]$frame, [string]$text, [datetime]$t0) {   # one frame of Clawd walking, with the status and a timer

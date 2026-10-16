@@ -12,6 +12,7 @@ Start with the main [README](../README.md) for what Claude Moove does, how to us
 - **From a clone,** `powershell -ExecutionPolicy Bypass -File moove.ps1` uses that copy, and any arguments are passed through to the engine.
 - **The menu** offers 1 pack up, 2 move in, 3 add the Claude skill. Choice 3 copies `../skills/claude-moove/SKILL.md`, this engine, the buttons and the licence into `~/.claude/skills/claude-moove`, where Claude Code finds it as `/claude-moove`.
 - **The buttons** (`1 - PACK ...cmd`, `2 - UNPACK ...cmd`) run the engine directly. PACK copies them into every transfer folder: on a pendrive they're local files, so Windows doesn't flag them. Downloaded through a browser (the release's `claude-moove.zip`, or the repo zip), they do get flagged.
+- **Outside tools:** robocopy and tar run through cmd, taken from `ComSpec` and started in Windows' system folder, so they are always Windows' own: a file of the same name in the folder the engine was started from never runs instead.
 - **The plugin:** `../.claude-plugin/marketplace.json` makes this repo a plugin marketplace with one plugin, `moove` (the repo root). Names starting with `claude-` are reserved for Anthropic, hence `moove`. Its skill is `/moove:claude-moove`, or `/claude-moove` when nothing else has that name.
 - **Where unpack finds its data,** in this order:
   1. `-From <folder>`
